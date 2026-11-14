@@ -1,7 +1,7 @@
 # Homologacao temporaria: tokens individuais e agente em segundo plano
 
 Repositorio oficial: [ds1david/secure-gateway](https://github.com/ds1david/secure-gateway).
-Se ainda usa o clone antigo, siga primeiro [MIGRATION.md](../MIGRATION.md).
+Se ainda usa o clone antigo, siga primeiro [MIGRATION.md](MIGRATION.md).
 Para clientes Git/Edge sem processo Python local, use [EXTERNAL-PROXY.md](EXTERNAL-PROXY.md).
 As etapas abaixo que iniciam `Start-HttpsClient.ps1` sao para a alternativa de proxy
 local; a emissao/renovacao de politicas e tokens continua igual nos dois modelos.
@@ -44,7 +44,7 @@ depois de revisar e testar as alteracoes, publique somente codigo e documentacao
 ```powershell
 git status --short
 git diff --check
-git add gateway-poc/.gitignore gateway-poc/README.md gateway-poc/HOMOLOGATION.md gateway-poc/homologation.py gateway-poc/https_poc.py gateway-poc/poc.py gateway-poc/stream.py gateway-poc/Start-RestrictedLab.ps1 gateway-poc/Start-HttpsClient.ps1 gateway-poc/deploy/gateway-poc-https.service gateway-poc/tests/test_https.py gateway-poc/tests/test_client_admin.py
+git add .gitignore LAB.md HOMOLOGATION.md homologation.py https_poc.py poc.py stream.py Start-RestrictedLab.ps1 Start-HttpsClient.ps1 deploy/gateway-poc-https.service tests/test_https.py tests/test_client_admin.py
 git diff --cached --stat
 git commit -m "Update controlled gateway homologation"
 git push origin main
@@ -62,7 +62,7 @@ Atualize o codigo e instale os quatro modulos, preservando configuracoes e certi
 
 ```bash
 git -C ~/secure-gateway pull --ff-only origin main
-sudo install -o root -g root -m 0644 ~/secure-gateway/gateway-poc/{https_poc.py,poc.py,stream.py,homologation.py} /opt/gateway-poc-https/
+sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,homologation.py} /opt/gateway-poc-https/
 python3 /opt/gateway-poc-https/homologation.py prepare --out ~/bundles-homologation --client-id intermediario-01 --agent-id windows-lab-01 --hours 24
 ```
 
@@ -96,7 +96,7 @@ O helper cria backup e altera somente autenticacao, escopo de teste e limites. P
 config inteiro pelo antigo do intermediario: isso poderia desfazer o certificado publico.
 Nao altere HAProxy ou Certbot. O nome antigo do backend `client_mtls` e apenas uma etiqueta.
 
-No intermediario com SSH, dentro de `gateway-poc`, baixe os arquivos privados:
+No intermediario com SSH, na raiz do clone `secure-gateway`, baixe os arquivos privados:
 
 ```powershell
 git pull --ff-only origin main
@@ -112,7 +112,7 @@ do agente ao Windows restrito. Nao envie o token ao agente nem publique esses ar
 ## 3. Windows restrito: aplicar e verificar tudo antes de iniciar
 
 Transfira por canal aprovado somente `agent-policy.json` para
-`gateway-poc/bundles-homologation/`. Na pasta `gateway-poc`:
+`bundles-homologation/`. Na raiz do clone `secure-gateway`:
 
 ```powershell
 git pull --ff-only origin main

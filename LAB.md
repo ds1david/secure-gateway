@@ -1,11 +1,11 @@
 # Gateway e agente Python — POC controlada
 
 Projeto **secure-gateway**. Repositório oficial:
-[ds1david/secure-gateway](https://github.com/ds1david/secure-gateway), pasta `gateway-poc/`.
+[ds1david/secure-gateway](https://github.com/ds1david/secure-gateway), pasta ``.
 
 Para clientes externos sem processo Python local, consulte
 [EXTERNAL-PROXY.md](EXTERNAL-PROXY.md). Para trocar o clone antigo pelo repositorio
-novo, siga [MIGRATION.md](../MIGRATION.md).
+novo, siga [MIGRATION.md](MIGRATION.md).
 
 Para a homologacao temporaria solicitada de GitLab e Artifactory, com token individual
 por cliente, proxy local e agente em segundo plano apos preflight, consulte
@@ -35,7 +35,7 @@ persistência ou alteração de antivírus/EDR.
 ## Executar no Windows sem administrador
 
 Use um Python aprovado pela organização, instalado para o usuário. Execute em terminais
-PowerShell visíveis, na pasta `gateway-poc`. O runtime não requer pip nem pacotes externos.
+PowerShell visíveis, na raiz do clone `secure-gateway`. O runtime não requer pip nem pacotes externos.
 O gerador de certificados de teste requer OpenSSL 3 (por exemplo, o fornecido com Git
 for Windows); não baixe executáveis para contornar controles de endpoint.
 

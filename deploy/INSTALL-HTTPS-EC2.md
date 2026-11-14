@@ -1,7 +1,7 @@
 # Primeira instalacao HTTPS na EC2 Ubuntu
 
 Repositorio oficial: https://github.com/ds1david/secure-gateway. Para um ambiente
-existente migrando do repositorio anterior, use [MIGRATION.md](../../MIGRATION.md)
+existente migrando do repositorio anterior, use [MIGRATION.md](../MIGRATION.md)
 em vez de repetir esta primeira instalacao. Os comandos abaixo assumem clone novo
 em `~/secure-gateway`.
 
@@ -12,7 +12,7 @@ independentes em cada maquina. Nao reutilize o ZIP anteriormente publicado no Gi
 
 ## 1. Intermediario: enviar somente o pacote gateway
 
-No PowerShell, dentro de `gateway-poc`, no ambiente em que SSH funciona:
+No PowerShell, na raiz do clone `secure-gateway`, no ambiente em que SSH funciona:
 
 ```powershell
 scp -r .\bundles-https\gateway aws-frp:secure-gateway-upload/
@@ -39,7 +39,7 @@ aceitavel para a verificacao de origem da inspecao corporativa; prefira cadeia p
 
 ```bash
 sudo install -d -o root -g root -m 0755 /opt/gateway-poc-https
-sudo install -o root -g root -m 0644 ~/secure-gateway/gateway-poc/{https_poc.py,poc.py,stream.py,requirements-https.txt} /opt/gateway-poc-https/
+sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,requirements-https.txt} /opt/gateway-poc-https/
 sudo python3 -m venv /opt/gateway-poc-https/.venv
 sudo /opt/gateway-poc-https/.venv/bin/python -m pip install -r /opt/gateway-poc-https/requirements-https.txt
 sudo install -d -o root -g gateway-poc -m 0750 /etc/gateway-poc-https
@@ -65,7 +65,7 @@ de certificado publico/cadeia completa, copie-os tambem e ajuste `tls_cert`/`tls
 ## 4. EC2 Linux: iniciar listeners internos
 
 ```bash
-sudo install -o root -g root -m 0644 ~/secure-gateway/gateway-poc/deploy/gateway-poc-https.service /etc/systemd/system/gateway-poc-https.service
+sudo install -o root -g root -m 0644 ~/secure-gateway/deploy/gateway-poc-https.service /etc/systemd/system/gateway-poc-https.service
 sudo systemd-analyze verify /etc/systemd/system/gateway-poc-https.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now gateway-poc-https
@@ -83,9 +83,9 @@ O trecho abaixo pressupoe HAProxy recem-instalado. Se ja houver rotas de outros
 servicos, revise e mescle a configuracao em vez de sobrescreve-la.
 
 ```bash
-sudo haproxy -c -f ~/secure-gateway/gateway-poc/deploy/haproxy-https.cfg
+sudo haproxy -c -f ~/secure-gateway/deploy/haproxy-https.cfg
 sudo cp -p /etc/haproxy/haproxy.cfg "/etc/haproxy/haproxy.cfg.before-secure-gateway-$(date -u +%Y%m%dT%H%M%SZ)"
-sudo install -o root -g root -m 0644 ~/secure-gateway/gateway-poc/deploy/haproxy-https.cfg /etc/haproxy/haproxy.cfg
+sudo install -o root -g root -m 0644 ~/secure-gateway/deploy/haproxy-https.cfg /etc/haproxy/haproxy.cfg
 sudo haproxy -c -f /etc/haproxy/haproxy.cfg
 ```
 

@@ -8,13 +8,13 @@ autorizacao do agente, prazo e limites. Sem configuracao explicita nao ha listen
 
 ## 1. Atualizar o aws-frp
 
-Se esta migrando do repo antigo, siga primeiro [MIGRATION.md](../MIGRATION.md).
+Se esta migrando do repo antigo, siga primeiro [MIGRATION.md](MIGRATION.md).
 Caso ja tenha o clone novo:
 
 ```bash
 git -C ~/secure-gateway pull --ff-only origin main
-sudo install -o root -g root -m 0644 ~/secure-gateway/gateway-poc/{https_poc.py,poc.py,stream.py,homologation.py} /opt/gateway-poc-https/
-sudo install -o root -g root -m 0644 ~/secure-gateway/gateway-poc/deploy/gateway-poc-https.service /etc/systemd/system/gateway-poc-https.service
+sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,homologation.py} /opt/gateway-poc-https/
+sudo install -o root -g root -m 0644 ~/secure-gateway/deploy/gateway-poc-https.service /etc/systemd/system/gateway-poc-https.service
 sudo systemctl daemon-reload
 ```
 

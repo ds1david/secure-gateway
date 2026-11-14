@@ -1,6 +1,6 @@
 # Testes HTTPS no Windows restrito e preparação dos serviços
 
-Repositório oficial: https://github.com/ds1david/secure-gateway, pasta `gateway-poc/`.
+Repositório oficial: https://github.com/ds1david/secure-gateway, pasta ``.
 
 Esta versão acrescenta `https_poc.py` sem substituir o protocolo antigo de `poc.py`.
 O agente usa HTTPS com mensagens JWS/JWT RS256 assinadas nos dois sentidos. O cliente
@@ -28,7 +28,7 @@ das chaves TLS. A CA corporativa não é uma credencial de agente.
 
 ## 1. Preparar uma única vez no intermediário autorizado
 
-Atualize o clone oficial. Em `gateway-poc`, use um ambiente Python 3.11+ aprovado.
+Atualize o clone oficial. Na raiz do clone `secure-gateway`, use um ambiente Python 3.11+ aprovado.
 No PowerShell:
 
 ```powershell

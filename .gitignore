@@ -13,3 +13,6 @@ __pycache__/
 bundles*/
 certs*/
 homologacao*/
+policy.json
+certs*.zip
+bundles*.zip
