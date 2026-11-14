@@ -84,7 +84,8 @@ No desafio do proxy, usuario e o ID e senha e o token atual. O login do GitLab e
 separado. Nao coloque o segredo na URL, linha de comando ou repositorio. Na rotacao,
 atualize somente a credencial do proxy no gerenciador aprovado. O Edge do Windows
 pode ser aberto com `tools/Start-ExternalEdge.ps1` pelo PowerShell do intermediario;
-o desenvolvimento permanece no WSL. Veja limites de Maven/LDAP no guia externo.
+o desenvolvimento permanece no WSL. Para Maven sem processo local, configure o
+mirror HTTPS conforme [MAVEN.md](MAVEN.md). LDAP permanece independente do gateway.
 
 Se optar pelo proxy local (por exemplo, para o Maven ja configurado):
 

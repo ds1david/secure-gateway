@@ -699,6 +699,224 @@ class HTTPSIntegration(unittest.TestCase):
                     self.assertIn(b'200 OK', peer.recv(4096))
             remote.close()
 
+    @contextlib.contextmanager
+    def maven_gateway(self):
+        records = []
+        pom = (b'<project><modelVersion>4.0.0</modelVersion><groupId>org.example</groupId>'
+               b'<artifactId>demo-parent</artifactId><version>1.0</version><packaging>pom</packaging></project>')
+        jar = bytes(range(256)) * 160
+        class Origin(http.server.BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'
+            def log_message(self, *_):
+                pass
+            def do_HEAD(self):
+                self.do_GET()
+            def do_GET(self):
+                records.append((self.path, dict(self.headers)))
+                if self.path.endswith('redirect.pom'):
+                    self.send_response(302)
+                    self.send_header('Location', 'https://forbidden.invalid/credential-target')
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+                status = 200
+                body = jar if self.path.endswith('.jar') else pom
+                if self.path.endswith('.sha1'):
+                    body = hashlib.sha1(pom).hexdigest().encode()
+                if self.path.endswith('missing.pom'):
+                    status, body = 404, b'private upstream error details'
+                if self.path.endswith('private.pom'):
+                    status, body = 401, b'upstream login details'
+                if self.headers.get('If-None-Match') == '"fixture"':
+                    status, body = 304, b''
+                if self.headers.get('Range') == 'bytes=0-3':
+                    status, body = 206, body[:4]
+                self.send_response(status)
+                self.send_header('Connection', 'close')
+                self.send_header('ETag', '"fixture"')
+                self.send_header('Set-Cookie', 'upstream-cookie-must-not-escape')
+                if status == 206:
+                    self.send_header('Content-Range', 'bytes 0-3/' + str(len(jar)))
+                if self.path.endswith(('chunked.jar', 'broken-chunked.jar')):
+                    self.send_header('Transfer-Encoding', 'chunked')
+                elif self.path.endswith('big.jar'):
+                    self.send_header('Content-Length', str(20 * 1024 * 1024))
+                elif self.path.endswith('partial.jar'):
+                    self.send_header('Content-Length', str(len(body) + 17))
+                elif self.path.endswith('bad.jar'):
+                    self.send_header('Content-Length', '1')
+                    self.send_header('Content-Length', '2')
+                else:
+                    self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                if self.command == 'HEAD' or self.path.endswith(('big.jar', 'bad.jar')):
+                    return
+                try:
+                    if self.path.endswith(('chunked.jar', 'broken-chunked.jar')):
+                        for offset in range(0, len(body), 16384):
+                            chunk = body[offset:offset + 16384]
+                            self.wfile.write(f'{len(chunk):x}\r\n'.encode() + chunk + b'\r\n')
+                        if not self.path.endswith('broken-chunked.jar'):
+                            self.wfile.write(b'0\r\n\r\n')
+                    else:
+                        self.wfile.write(body)
+                except OSError:
+                    pass
+        with self.token_client(services=('artifactory',)) as (config, policy, token), \
+                http.server.HTTPServer(('127.0.0.1', 0), Origin) as origin:
+            server_thread = threading.Thread(target=origin.serve_forever, daemon=True)
+            server_thread.start()
+            expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+            entry = {'enabled': True, 'test_authorization': {'kind': 'requester_authorized_test',
+                'agent_id': self.gateway['agent_id'], 'requested_by': 'test-operator',
+                'corporate_approval': 'pending', 'expires_utc': expires.strftime('%Y-%m-%dT%H:%M:%SZ')}}
+            try:
+                with mock.patch.dict(h.TARGETS, {'artifactory': ('127.0.0.1', origin.server_address[1])}), \
+                     mock.patch.dict(self.gateway, {'operation_mode': 'homologation'}), \
+                     mock.patch.dict(self.agent, {'operation_mode': 'homologation'}), \
+                     mock.patch.dict(self.gateway['services'], {'artifactory': entry}), \
+                     mock.patch.dict(self.agent['services'], {'artifactory': entry}):
+                    stop, agent = self.run_agent('artifactory')
+                    try:
+                        with self.external_proxy() as proxy:
+                            yield proxy, config, policy, token, records, pom, jar
+                    finally:
+                        stop.set()
+                        agent.join(15)
+                        self.assertFalse(agent.is_alive())
+            finally:
+                origin.shutdown()
+                server_thread.join(10)
+
+    @contextlib.contextmanager
+    def maven_response(self, proxy, identity, token, path='demo.pom', method='GET', headers=b''):
+        auth = b'' if token is None else b'Authorization: Basic ' + base64.b64encode((identity + ':' + token).encode()) + b'\r\n'
+        request = (method.encode() + b' /maven/repo/' + path.encode() + b' HTTP/1.1\r\n'
+                   b'Host: localhost\r\n' + auth + headers + b'\r\n')
+        with self.proxy_request(proxy, request) as peer:
+            with http.client.HTTPResponse(peer, method=method) as response:
+                response.begin()
+                yield response
+
+    def test_maven_native_resolves_parent_over_authenticated_https(self):
+        mvn = shutil.which('mvn') or shutil.which('mvn.cmd')
+        keytool = shutil.which('keytool')
+        if not mvn or not keytool:
+            self.skipTest('Maven and keytool required for native integration')
+        with self.maven_gateway() as (proxy, config, policy, token, records, pom, jar):
+            work = self.root / 'native-maven'
+            work.mkdir()
+            truststore = work / 'truststore.p12'
+            created = subprocess.run([keytool, '-importcert', '-noprompt', '-alias', 'fixture-ca',
+                '-file', h.file(config, 'tls_ca'), '-keystore', str(truststore), '-storepass', 'fixturepass'],
+                capture_output=True, text=True, timeout=20)
+            self.assertEqual(0, created.returncode, created.stderr)
+            (work / 'pom.xml').write_text('<project><modelVersion>4.0.0</modelVersion>'
+                '<parent><groupId>org.example</groupId><artifactId>demo-parent</artifactId>'
+                '<version>1.0</version><relativePath/></parent><artifactId>fixture-child</artifactId>'
+                '<packaging>pom</packaging></project>', encoding='utf-8')
+            (work / 'global-settings.xml').write_text('<settings/>', encoding='utf-8')
+            (work / 'settings.xml').write_text('<settings><servers><server><id>fixture-gateway</id>'
+                '<username>' + config['client_id'] + '</username><password>${env.SECURE_GATEWAY_TOKEN}</password>'
+                '</server></servers><mirrors><mirror><id>fixture-gateway</id><mirrorOf>*</mirrorOf>'
+                '<url>https://localhost:' + str(proxy.server_address[1]) + '/maven/repo</url>'
+                '</mirror></mirrors></settings>', encoding='utf-8')
+            env = dict(os.environ)
+            env.update(SECURE_GATEWAY_TOKEN=token, MAVEN_ARGS='',
+                MAVEN_OPTS=f'-Djavax.net.ssl.trustStore={truststore} -Djavax.net.ssl.trustStorePassword=fixturepass')
+            result = subprocess.run([mvn, '-B', '-U', '-s', str(work / 'settings.xml'),
+                '-gs', str(work / 'global-settings.xml'), '-Dmaven.repo.local=' + str(work / 'repository'),
+                '-f', str(work / 'pom.xml'), 'validate'], env=env, capture_output=True, text=True, timeout=90)
+            output = result.stdout + result.stderr
+            self.assertNotIn(token, output)
+            self.assertEqual(0, result.returncode, output.replace(token, '<redacted>'))
+            self.assertIn('BUILD SUCCESS', output)
+            self.assertTrue(any('/org/example/demo-parent/1.0/demo-parent-1.0.pom' in path for path, _ in records))
+
+    def test_maven_pom_checksum_head_and_credentials_never_reach_origin(self):
+        with self.maven_gateway() as (proxy, config, policy, token, records, pom, jar):
+            for method, path, expected in [('GET', 'org/example/demo-parent/1.0/demo-parent-1.0.pom', pom),
+                                           ('GET', 'demo.pom.sha1', hashlib.sha1(pom).hexdigest().encode()),
+                                           ('HEAD', 'demo.pom', b'')]:
+                with self.maven_response(proxy, config['client_id'], token, path, method) as response:
+                    self.assertEqual(200, response.status)
+                    self.assertEqual(expected, response.read())
+                    self.assertIsNotNone(response.getheader('X-SecureGateway-Request-Id'))
+                    self.assertIsNone(response.getheader('Set-Cookie'))
+            self.assertEqual('/artifactory/repo/org/example/demo-parent/1.0/demo-parent-1.0.pom', records[0][0])
+            for path, headers in records:
+                self.assertNotIn('Authorization', headers)
+                self.assertNotIn('Proxy-Authorization', headers)
+                self.assertNotIn(token, repr(headers))
+            self.assertNotIn(token, self.output.getvalue())
+
+    def test_maven_binary_chunked_range_and_not_modified(self):
+        with self.maven_gateway() as (proxy, config, policy, token, records, pom, jar):
+            for path in ('demo.jar', 'chunked.jar'):
+                with self.maven_response(proxy, config['client_id'], token, path) as response:
+                    self.assertEqual(200, response.status)
+                    self.assertEqual(jar, response.read())
+                    self.assertEqual('chunked' if path == 'chunked.jar' else None, response.getheader('Transfer-Encoding'))
+            with self.maven_response(proxy, config['client_id'], token, 'demo.jar', headers=b'Range: bytes=0-3\r\n') as response:
+                self.assertEqual(206, response.status)
+                self.assertEqual(jar[:4], response.read())
+            with self.maven_response(proxy, config['client_id'], token, headers=b'If-None-Match: "fixture"\r\n') as response:
+                self.assertEqual(304, response.status)
+                self.assertEqual(b'', response.read())
+
+    def test_maven_truncated_transfers_are_detected_by_the_client(self):
+        with self.maven_gateway() as (proxy, config, policy, token, records, pom, jar):
+            for path in ('partial.jar', 'broken-chunked.jar'):
+                with self.maven_response(proxy, config['client_id'], token, path) as response:
+                    self.assertEqual(200, response.status)
+                    with self.assertRaises(http.client.IncompleteRead):
+                        response.read()
+            self.assertIn('maven_upstream_truncated', self.output.getvalue())
+
+    def test_maven_authentication_and_scope(self):
+        with self.maven_gateway() as (proxy, config, policy, token, records, pom, jar):
+            for supplied in (None, 'invalid-token-' * 4):
+                with self.maven_response(proxy, config['client_id'], supplied) as response:
+                    self.assertEqual(401, response.status)
+                    self.assertIn('secure-gateway-maven', response.getheader('WWW-Authenticate'))
+                    self.assertIsNone(response.getheader('Proxy-Authenticate'))
+            for key, value in [('enabled', False), ('expires_utc', '2000-01-01T00:00:00Z')]:
+                old = policy[key]
+                policy[key] = value
+                with self.maven_response(proxy, config['client_id'], token) as response:
+                    self.assertEqual(401, response.status)
+                policy[key] = old
+            policy['services'] = ['gitlab']
+            with self.maven_response(proxy, config['client_id'], token) as response:
+                self.assertEqual(403, response.status)
+            self.assertEqual([], records)
+
+    def test_maven_rejects_writes_traversal_queries_and_request_bodies(self):
+        with self.maven_gateway() as (proxy, config, policy, token, records, pom, jar):
+            for method in ('POST', 'PUT', 'DELETE', 'CONNECT'):
+                with self.maven_response(proxy, config['client_id'], token, method=method) as response:
+                    self.assertEqual(405, response.status)
+                    self.assertEqual('GET, HEAD', response.getheader('Allow'))
+            for path in ('../secret', 'group/../secret', '%2e%2e/secret', '%252e%252e/secret',
+                         'group//secret', 'demo.pom?token=not-a-real-secret', 'https://forbidden.invalid/a'):
+                with self.maven_response(proxy, config['client_id'], token, path=path) as response:
+                    self.assertEqual(400, response.status)
+            with self.maven_response(proxy, config['client_id'], token, headers=b'Content-Length: 1\r\n') as response:
+                self.assertEqual(400, response.status)
+            self.assertEqual([], records)
+
+    def test_maven_origin_errors_redirects_framing_and_size_limits(self):
+        with self.maven_gateway() as (proxy, config, policy, token, records, pom, jar):
+            for path, expected in [('missing.pom', 404), ('private.pom', 502), ('redirect.pom', 502),
+                                   ('big.jar', 413), ('bad.jar', 502)]:
+                with self.maven_response(proxy, config['client_id'], token, path) as response:
+                    self.assertEqual(expected, response.status)
+                    self.assertEqual(b'', response.read())
+                    self.assertIsNone(response.getheader('Location'))
+                    self.assertIsNone(response.getheader('WWW-Authenticate'))
+            self.assertNotIn('credential-target', self.output.getvalue())
+            self.assertNotIn(token, self.output.getvalue())
+
     def test_bundle_separates_private_keys(self):
         self.assertFalse((self.root / 'bundles/agent/gateway.key').exists())
         self.assertFalse((self.root / 'bundles/client/signing.key').exists())

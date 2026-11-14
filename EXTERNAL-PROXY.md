@@ -137,10 +137,11 @@ curl pode acessar o Artifactory HTTP pelo proxy HTTPS: cliente->AWS e criptograf
 mas agente->Artifactory:80 continua sem TLS. Configure HTTPS no servico antes de
 transmitir credenciais/dados sensiveis.
 
-Nao substitua apenas o host/porta no proxy HTTP do Maven: suporte a proxy TLS depende
-da versao e transporte do Maven. A configuracao anterior com proxy local continua
-valida; acesso Maven direto sem processo local requer validar esse suporte na sua
-versao. Nao oferecemos listener HTTP sem TLS para acomodar transportes incompativeis.
+Para Maven sem processo local, use a entrada de repositorio HTTPS em
+`/maven/repo`, conforme [MAVEN.md](MAVEN.md). O mirror usa autenticacao de servidor
+`Authorization` e o token individual; nao depende de suporte a proxy TLS do Maven.
+O exemplo completo fica em [examples/maven-settings.xml](examples/maven-settings.xml).
+Essa rota requer atualizar o codigo do gateway, mesmo se o forward proxy ja funcionava.
 
 ## 7. Rotacao, limites e rollback
 

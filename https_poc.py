@@ -617,6 +617,9 @@ class ProxyHandler(socketserver.BaseRequestHandler):
     def public_response(self, method, target):
         return False
 
+    def routed_response(self, method, target, lines):
+        return False
+
     def authenticate(self, lines):
         return None
 
@@ -643,7 +646,6 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                 raise ValueError('version denied')
             if self.public_response(method, target):
                 return
-            self.credentials = self.authenticate(lines)
             headers = []
             names = []
             for line in lines[1:-2]:
@@ -655,6 +657,9 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                     headers.append((name, value.strip()))
             if names.count('content-length') > 1 or ('content-length' in names and 'transfer-encoding' in names):
                 raise ValueError('ambiguous body')
+            if self.routed_response(method, target, lines):
+                return
+            self.credentials = self.authenticate(lines)
             url = urlsplit('//' + target if method == 'CONNECT' else target)
             port = url.port or (443 if method == 'CONNECT' else 80)
             if url.username or url.password or url.fragment:
@@ -718,9 +723,9 @@ class ExternalProxyHandler(TLSAccept, ProxyHandler):
             + str(len(body)).encode() + b'\r\n\r\n' + (body if method == 'GET' else b''))
         return True
 
-    def authenticate(self, lines):
+    def authenticate(self, lines, header_name='proxy-authorization'):
         values = [line.split(':', 1)[1].strip() for line in lines[1:-2]
-                  if ':' in line and line.split(':', 1)[0].lower() == 'proxy-authorization']
+                  if ':' in line and line.split(':', 1)[0].lower() == header_name]
         try:
             if len(values) != 1:
                 raise ValueError('credentials required')
@@ -740,6 +745,158 @@ class ExternalProxyHandler(TLSAccept, ProxyHandler):
             self.server.state.rate('external-proxy-invalid', 30)
             raise ChannelError('proxy_authentication_required', 'proxy_authentication') from None
         return identity, token
+
+    def routed_response(self, method, target, lines):
+        prefix = '/maven/repo'
+        if not (target == prefix or target.startswith(prefix + '/') or target.startswith(prefix + '?')):
+            return False
+        request_id = uuid.uuid4().hex
+        response_started = False
+        count = 0
+        identity = None
+        outcome = 'failed'
+        stage = 'authentication'
+        try:
+            # This is an origin HTTPS endpoint: use Authorization/401, not the
+            # Proxy-Authorization/407 exchange used by forward-proxy clients.
+            self.credentials = self.authenticate(lines, 'authorization')
+            identity = self.credentials[0]
+            self.server.state.rate('maven:' + identity,
+                min(120, self.server.config.get('client_requests_per_minute', 30)))
+            stage = 'authorization'
+            if ('artifactory' not in self.server.config['token_clients'][identity].get('services', [])
+                    or not service_allowed(self.server.config, 'artifactory')):
+                raise ChannelError('maven_service_denied', 'maven', 403)
+            if method not in ('GET', 'HEAD'):
+                raise ChannelError('maven_read_only', 'maven', 405)
+            suffix = target[len(prefix):]
+            # Maven layout needs only plain path segments. Reject percent escapes,
+            # traversal, queries and alternate authorities before opening a tunnel.
+            if (not re.fullmatch(r'(?:/[A-Za-z0-9_.+-]+)*/?', suffix)
+                    or any(part in ('.', '..') for part in suffix.split('/'))):
+                raise ChannelError('maven_path_invalid', 'maven', 400)
+            fields = collections.defaultdict(list)
+            for line in lines[1:-2]:
+                name, value = line.split(':', 1)
+                value = value.strip()
+                if any(ord(c) < 32 and c != '\t' or ord(c) == 127 for c in value):
+                    raise ChannelError('maven_header_invalid', 'maven', 400)
+                fields[name.lower()].append(value)
+            if ('transfer-encoding' in fields or fields.get('content-length', ['0']) != ['0']):
+                raise ChannelError('maven_body_denied', 'maven', 400)
+            forwarded = []
+            for name in ('accept', 'range', 'if-range', 'if-modified-since', 'if-none-match'):
+                values = fields.get(name, [])
+                if len(values) > 1:
+                    raise ChannelError('maven_header_invalid', 'maven', 400)
+                if values:
+                    forwarded.append((name, values[0]))
+            host, port = TARGETS['artifactory']
+            authority = host if port == 80 else f'{host}:{port}'
+            upstream_path = '/artifactory/repo' + (suffix or '/')
+            request = (f'{method} {upstream_path} HTTP/1.1\r\nHost: {authority}\r\n'
+                'Connection: close\r\nAccept-Encoding: identity\r\nUser-Agent: secure-gateway-maven\r\n')
+            request += ''.join(f'{name}: {value}\r\n' for name, value in forwarded) + '\r\n'
+            stage = 'upstream'
+            deadline = time.monotonic() + self.server.config['max_seconds']
+            with self.open_remote('artifactory') as remote:
+                remote.settimeout(self.server.config.get('idle_seconds', 30))
+                remote.sendall(request.encode('iso-8859-1'))
+                with http.client.HTTPResponse(remote, method=method) as response:
+                    response.begin()
+                    status = response.status
+                    # Do not forward login challenges, redirects, cookies or service
+                    # error pages; a gateway token must never escape to another URL.
+                    if status not in (200, 206, 304, 404, 410, 416):
+                        reason = ('maven_upstream_auth_required' if status in (401, 403)
+                                  else 'maven_upstream_redirect_denied' if 300 <= status < 400
+                                  else 'maven_upstream_failed')
+                        raise ChannelError(reason, 'maven', 502)
+                    lengths = response.headers.get_all('Content-Length', [])
+                    transfer = response.headers.get_all('Transfer-Encoding', [])
+                    encoding = response.headers.get('Content-Encoding', 'identity').lower()
+                    if (len(lengths) > 1 or len(transfer) > 1 or lengths and transfer
+                            or transfer and transfer[0].lower() != 'chunked'
+                            or lengths and not re.fullmatch(r'[0-9]+', lengths[0])
+                            or encoding != 'identity'):
+                        raise ChannelError('maven_upstream_framing_invalid', 'maven', 502)
+                    body_allowed = method != 'HEAD' and status in (200, 206)
+                    if body_allowed and not lengths and not transfer:
+                        raise ChannelError('maven_upstream_framing_invalid', 'maven', 502)
+                    chunked_output = body_allowed and not lengths
+                    budget = max(0, self.server.config['max_bytes'] - 16384)
+                    if body_allowed and lengths and int(lengths[0]) > budget:
+                        raise ChannelError('maven_artifact_too_large', 'maven', 413)
+                    output = [('Cache-Control', 'no-store'), ('Connection', 'close'),
+                              ('X-SecureGateway-Request-Id', request_id)]
+                    for name in ('Content-Type', 'ETag', 'Last-Modified', 'Accept-Ranges', 'Content-Range'):
+                        value = response.headers.get(name)
+                        if value is not None:
+                            if any(ord(c) < 32 or ord(c) == 127 for c in value):
+                                raise ChannelError('maven_upstream_header_invalid', 'maven', 502)
+                            output.append((name, value))
+                    if method == 'HEAD':
+                        if lengths:
+                            output.append(('Content-Length', lengths[0]))
+                    elif body_allowed:
+                        if lengths:
+                            output.append(('Content-Length', lengths[0]))
+                    else:
+                        output.append(('Content-Length', '0'))
+                    if chunked_output:
+                        output.append(('Transfer-Encoding', 'chunked'))
+                    self.maven_headers(status, output)
+                    response_started = True
+                    if body_allowed:
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise ChannelError('maven_session_timeout', 'maven', 504)
+                            remote.settimeout(min(remaining, self.server.config.get('idle_seconds', 30)))
+                            data = response.read(16384)
+                            if not data:
+                                break
+                            count += len(data)
+                            if count > budget:
+                                raise ChannelError('maven_artifact_too_large', 'maven', 413)
+                            self.request.settimeout(min(remaining, self.server.config.get('idle_seconds', 30)))
+                            if chunked_output:
+                                self.request.sendall(f'{len(data):x}\r\n'.encode() + data + b'\r\n')
+                            else:
+                                self.request.sendall(data)
+                    if body_allowed and lengths and count != int(lengths[0]):
+                        raise ChannelError('maven_upstream_truncated', 'maven', 502)
+                    if chunked_output:
+                        self.request.sendall(b'0\r\n\r\n')
+                    outcome = 'ok' if status in (200, 206, 304) else 'not_found_or_range'
+            poc.audit('maven_request_finished', request_id=request_id, client_id=identity,
+                      service='artifactory', outcome=outcome, http_status=status, bytes=count)
+        except (OSError, ValueError, TypeError, http.client.HTTPException) as error:
+            if isinstance(error, ChannelError) and error.reason == 'proxy_authentication_required':
+                status, reason = 401, 'maven_authentication_required'
+            elif isinstance(error, ChannelError):
+                status, reason = error.http_status or 502, error.reason
+            else:
+                status, reason = (429, 'maven_rate_limited') if str(error) == 'rate limit' else (502, 'maven_request_failed')
+            poc.audit('maven_request_rejected', request_id=request_id, service='artifactory',
+                      reason=reason, stage=stage, http_status=status, bytes=count)
+            if not response_started:
+                headers = [('Content-Length', '0'), ('Cache-Control', 'no-store'),
+                           ('Connection', 'close'), ('X-SecureGateway-Request-Id', request_id)]
+                if status == 401:
+                    headers.append(('WWW-Authenticate', 'Basic realm="secure-gateway-maven", charset="UTF-8"'))
+                if status == 405:
+                    headers.append(('Allow', 'GET, HEAD'))
+                try:
+                    self.maven_headers(status, headers)
+                except OSError:
+                    pass
+        return True
+
+    def maven_headers(self, status, headers):
+        first = f'HTTP/1.1 {status} {http.client.responses.get(status, "Error")}\r\n'
+        wire = first + ''.join(f'{name}: {value}\r\n' for name, value in headers) + '\r\n'
+        self.request.sendall(wire.encode('iso-8859-1'))
 
     @contextlib.contextmanager
     def open_remote(self, service):

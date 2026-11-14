@@ -15,6 +15,7 @@ Ferramentas auxiliares ficam em `tools/`, testes em `tests/` e unidades em `depl
 - [Operacao nos tres ambientes](OPERATIONS.md).
 - [Atualizar instalacoes com a estrutura anterior](MIGRATION.md).
 - [Proxy HTTPS externo para Git e Edge](EXTERNAL-PROXY.md).
+- [Maven direto pelo gateway HTTPS](MAVEN.md).
 - [Homologacao, tokens e renovacao](HOMOLOGATION.md).
 - [Primeira instalacao na EC2](deploy/INSTALL-HTTPS-EC2.md).
 - [Laboratorio sintetico e transporte anterior](LAB.md).
@@ -43,4 +44,6 @@ python -m venv .venv
 ```
 
 Os testes de certificados precisam de OpenSSL; no Windows tambem procuram o OpenSSL
-do Git. Todos os destinos usados nos testes sao ficticios e locais.
+do Git. Quando Maven e keytool estao disponiveis, a suite tambem resolve um parent
+POM ficticio com Maven real, cache isolado e TLS validado. Todos os destinos usados
+nos testes sao ficticios e locais.
