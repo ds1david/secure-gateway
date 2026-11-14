@@ -1,0 +1,15 @@
+__pycache__/
+.venv/
+.deps/
+.test-state/
+*.token
+*.key
+*.pem
+*.crt
+*.zip
+*.sqlite*
+*.log
+*.before-*
+bundles*/
+certs*/
+homologacao*/
