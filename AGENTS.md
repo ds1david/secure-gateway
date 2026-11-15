@@ -14,3 +14,8 @@
 - Nunca versionar tokens, certificados, chaves, bundles, arquivos de transferencia,
   logs, bancos de replay ou configuracoes operacionais. Nao desligue validacao TLS.
 - Nao implemente ocultacao do agente ou contorno de controles corporativos.
+
+- Windows usa Tunnel.ps1/tunnel.cmd pelo PATH; aws-frp usa tunnel.sh. Preserve a
+  validacao antes de parar o agente e nunca envie o token do cliente ao Windows restrito.
+- Validade padrao de politicas/tokens: 24 horas; maxima: 720 horas. Rotacao e centralizada
+  na AWS e exporta somente politica sem segredos ao agente.

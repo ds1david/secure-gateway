@@ -178,17 +178,21 @@ class HTTPSIntegration(unittest.TestCase):
         path = self.root / 'bundles/agent/background-config.json'
         path.write_text(json.dumps({key: value for key, value in self.agent.items() if key != '_root'}))
         runtime = self.root / 'runtime'
-        script = self.root.parents[1] / 'Start-RestrictedLab.ps1'
-        def invoke(mode):
-            # Windows children may inherit pipe handles even after PowerShell exits.
-            # Capture to ordinary files so a correctly detached child cannot hold
-            # unittest's communicate() open.
+        wrapper_root = self.root.parents[1]
+        elsewhere = self.root / 'another folder'
+        elsewhere.mkdir()
+        env = dict(os.environ)
+        env['PATH'] = str(wrapper_root) + os.pathsep + env.get('PATH', '')
+        def invoke(mode, *extra):
             output = self.root / ('launcher-' + uuid.uuid4().hex + '.out')
             errors = output.with_suffix('.err')
+            commands = {'Agent': 'up', 'Stop': 'down', 'Status': 'status', 'Check': 'check', 'Logs': 'logs'}
+            command = commands.get(mode, mode)
             with output.open('w', encoding='utf-8') as stdout, errors.open('w', encoding='utf-8') as stderr:
-                result = subprocess.run(['powershell', '-NoProfile', '-File', str(script), '-Mode', mode,
-                                         '-Service', 'lab-status', '-Config', str(path),
-                                         '-RuntimeDirectory', str(runtime)], stdout=stdout, stderr=stderr, timeout=60)
+                result = subprocess.run(['cmd.exe', '/d', '/c', 'tunnel', command,
+                                         '-Service', 'lab-status', '-Config', '../bundles/agent/background-config.json',
+                                         '-RuntimeDirectory', '../runtime', *extra], cwd=elsewhere, env=env,
+                                         stdout=stdout, stderr=stderr, timeout=60)
             result.stdout = output.read_text(encoding='utf-8-sig', errors='replace')
             result.stderr = errors.read_text(encoding='utf-8-sig', errors='replace')
             return result
@@ -200,6 +204,36 @@ class HTTPSIntegration(unittest.TestCase):
             self.assertNotEqual(os.getpid(), record['pid'])
             status = invoke('Status')
             self.assertEqual(record['pid'], json.loads(status.stdout)['pid'])
+            repeated = invoke('Agent')
+            self.assertEqual(0, repeated.returncode, repeated.stdout + repeated.stderr)
+            self.assertEqual(record['pid'], json.loads(repeated.stdout)['pid'])
+            restarted = invoke('restart')
+            self.assertEqual(0, restarted.returncode, restarted.stdout + restarted.stderr)
+            replacement = json.loads((runtime / 'agent.json').read_text(encoding='utf-8-sig'))
+            self.assertNotEqual(record['pid'], replacement['pid'])
+            rotation_dir = self.root / 'wrapper-rotation'
+            homologation.prepare(rotation_dir, hours=720, requested_by='test-operator')
+            agent_policy = json.loads((rotation_dir / 'agent-policy.json').read_text())
+            invalid = copy.deepcopy(agent_policy)
+            invalid['patch']['client_token'] = 'synthetic-secret-must-not-be-imported'
+            encoded_bad = base64.b64encode(json.dumps(invalid).encode()).decode()
+            rejected = invoke('rotate-client-token', '-PolicyJsonBase64', encoded_bad)
+            self.assertNotEqual(0, rejected.returncode)
+            still_running = json.loads((runtime / 'agent.json').read_text(encoding='utf-8-sig'))
+            self.assertEqual(replacement['pid'], still_running['pid'])
+            encoded = base64.b64encode(json.dumps(agent_policy).encode()).decode()
+            rotated = invoke('rotate-client-token', '-PolicyJsonBase64', encoded)
+            self.assertEqual(0, rotated.returncode, rotated.stdout + rotated.stderr)
+            applied = json.loads(path.read_text(encoding='utf-8-sig'))
+            self.assertEqual(agent_policy['patch']['services']['gitlab']['test_authorization'],
+                             applied['services']['gitlab']['test_authorization'])
+            self.assertFalse(any(runtime.glob('policy-*.json')))
+            checked = invoke('Check')
+            self.assertEqual(0, checked.returncode, checked.stdout + checked.stderr)
+            logs = invoke('Logs', '-Tail', '20')
+            self.assertEqual(0, logs.returncode, logs.stdout + logs.stderr)
+            self.assertIn('agent_preflight_ok', logs.stdout)
+
             with h.client_socket(self.client, 'lab-status') as sock:
                 sock.sendall(b'GET /status HTTP/1.0\r\nHost: localhost\r\n\r\n')
                 response = http.client.HTTPResponse(sock)
@@ -209,6 +243,11 @@ class HTTPSIntegration(unittest.TestCase):
             stopped = invoke('Stop')
             self.assertEqual(0, stopped.returncode, stopped.stdout + stopped.stderr)
         self.assertFalse((runtime / 'agent.json').exists())
+        logs = invoke('Logs')
+        self.assertEqual(0, logs.returncode, logs.stdout + logs.stderr)
+        self.assertIn('agent_preflight_ok', logs.stdout)
+        self.assertTrue((runtime / 'last-run.json').exists())
+
         (runtime / 'agent.json').write_text(json.dumps({'pid': os.getpid(), 'start_ticks': '0', 'executable': 'wrong'}))
         refused = invoke('Stop')
         self.assertNotEqual(0, refused.returncode)
@@ -323,6 +362,27 @@ class HTTPSIntegration(unittest.TestCase):
             finally:
                 proxy.shutdown()
                 thread.join(10)
+
+    def test_gateway_control_check_uses_verified_tls_listeners(self):
+        with self.token_client(), mock.patch.dict(self.gateway, {'external_proxy_host':'localhost'}):
+            with self.external_proxy() as proxy:
+                config = {name:value for name,value in self.gateway.items() if name != '_root'}
+                config['external_proxy_port'] = proxy.server_address[1]
+                path = self.gateway['_root'] / 'check-config.json'
+                path.write_text(json.dumps(config), encoding='utf-8')
+                original = socket.create_connection
+                def connect(address, *args, **kwargs):
+                    if address == ('127.0.0.1', 443):
+                        address = self.api.server_address
+                    return original(address, *args, **kwargs)
+                with mock.patch.object(homologation.socket, 'create_connection', side_effect=connect):
+                    result = homologation.check_gateway(path, agent_host='localhost')
+                    self.assertTrue(result['ready'])
+                    self.assertEqual(403, result['checks']['agent_entry']['http_status'])
+                    self.assertEqual(401, result['checks']['maven_entry']['http_status'])
+                    self.assertEqual(200, result['checks']['pac']['http_status'])
+                    with self.assertRaises(ssl.SSLCertVerificationError):
+                        homologation.check_gateway(path, agent_host='wrong.invalid')
 
     def test_signed_check_and_client_mtls(self):
         self.assertEqual({'ready': True}, h.Channel(self.agent).request({'action': 'check', 'service': 'lab-status'}))

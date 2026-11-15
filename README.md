@@ -12,6 +12,8 @@ Ferramentas auxiliares ficam em `tools/`, testes em `tests/` e unidades em `depl
 | Windows intermediario | WSL Linux: Git/Maven e cliente/proxy local opcional |
 | aws-frp | Linux: gateway, proxy HTTPS externo e administracao de tokens |
 
+- [Comando tunnel no aws-frp e rotacao de cliente](AWS-TUNNEL.md).
+- [Comando tunnel no Windows restrito e PATH](WINDOWS-TUNNEL.md).
 - [Operacao nos tres ambientes](OPERATIONS.md).
 - [Atualizar instalacoes com a estrutura anterior](MIGRATION.md).
 - [Proxy HTTPS externo para Git e Edge](EXTERNAL-PROXY.md).
@@ -22,7 +24,8 @@ Ferramentas auxiliares ficam em `tools/`, testes em `tests/` e unidades em `depl
 
 O proxy externo e opcional e vem desativado. O agente continua necessario no Windows
 restrito. Autenticacao GitLab/LDAP/SSO permanece independente do token do gateway.
-O perfil de homologacao dura ate 24 horas e registra aprovacao corporativa pendente.
+O perfil usa 24 horas por padrao e aceita ate 720 horas (30 dias), mantendo
+a aprovacao corporativa pendente.
 Nao publique certificados, tokens, bundles, backups, logs ou configuracoes privadas.
 
 ## Testar na raiz do clone

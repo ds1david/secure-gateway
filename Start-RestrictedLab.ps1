@@ -12,6 +12,7 @@ if (-not $RuntimeDirectory) { $RuntimeDirectory = Join-Path $env:LOCALAPPDATA 's
 Set-Location -LiteralPath $PSScriptRoot
 $runtimePath = [System.IO.Path]::GetFullPath($RuntimeDirectory)
 $recordPath = Join-Path $runtimePath 'agent.json'
+$lastRunPath = Join-Path $runtimePath 'last-run.json'
 $readyPath = Join-Path $runtimePath 'ready.json'
 $stopPath = Join-Path $runtimePath 'stop.request'
 function Get-ManagedAgent {
@@ -31,6 +32,7 @@ if ($Mode -in @('Status','Stop')) {
         exit 0
     }
     if ($Mode -eq 'Stop') {
+        $managed.Record | ConvertTo-Json | Set-Content -LiteralPath $lastRunPath -Encoding UTF8
         if ($managed.Record.stop_file -eq $stopPath) {
             Set-Content -LiteralPath $stopPath -Value 'stop' -Encoding ASCII
             $stopDeadline = (Get-Date).AddSeconds(12)
@@ -105,6 +107,7 @@ if ($Mode -in @('Agent','Homologation')) {
     $runId = [Guid]::NewGuid().ToString('N')
     $stdoutPath = Join-Path $runtimePath ("agent-$runId.log")
     $stderrPath = Join-Path $runtimePath ("agent-$runId.stderr.log")
+    [ordered]@{ event='agent_starting'; stdout=$stdoutPath; stderr=$stderrPath } | ConvertTo-Json | Set-Content -LiteralPath $lastRunPath -Encoding UTF8
     $arguments = '"' + $launcher + '" agent --config "' + $resolvedConfig + '" --service ' + $Service + ' --preflight --ready-file "' + $readyPath + '" --stop-file "' + $stopPath + '"'
     $launchProcess = Start-Process -FilePath $pythonPath -ArgumentList $arguments -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
     $deadline = (Get-Date).AddSeconds(45)
@@ -121,6 +124,7 @@ if ($Mode -in @('Agent','Homologation')) {
     # Track the real Python PID, not the virtualenv redirector parent.
     $agentProcess = Get-Process -Id ([int]$ready.pid) -ErrorAction Stop
     $record = [ordered]@{ event='agent_running'; pid=$agentProcess.Id; start_ticks=$agentProcess.StartTime.ToUniversalTime().Ticks.ToString(); executable=$agentProcess.Path; service=$Service; config=$resolvedConfig; stdout=$stdoutPath; stderr=$stderrPath; stop_file=$stopPath }
+    $record | ConvertTo-Json | Set-Content -LiteralPath $lastRunPath -Encoding UTF8
     $record | ConvertTo-Json | Set-Content -LiteralPath $recordPath -Encoding UTF8
     $record | ConvertTo-Json
     exit 0

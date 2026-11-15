@@ -8,7 +8,7 @@ local; a emissao/renovacao de politicas e tokens continua igual nos dois modelos
 
 Este perfil habilita GitLab e Artifactory para a validacao solicitada pelo operador.
 Registra autorizacao do solicitante do TESTE, nao aprovacao corporativa: o campo
-`corporate_approval` permanece `pending`. Validade maxima: 24 horas. Nao e configuracao
+`corporate_approval` permanece `pending`. Validade padrao: 24 horas; maxima: 720 horas (30 dias), solicitada com `--hours 720`. Nao e configuracao
 de producao. O laboratorio padrao permanece desabilitando destinos reais ate aplicar
 a politica. Os testes automatizados usam apenas fixtures em loopback.
 
@@ -66,7 +66,7 @@ sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,strea
 python3 /opt/gateway-poc-https/homologation.py prepare --out ~/bundles-homologation --client-id intermediario-01 --agent-id windows-lab-01 --hours 24
 ```
 
-Execute quando estiver pronto: a janela de 24 horas comeca na geracao. Padroes:
+Execute quando estiver pronto: a validade escolhida comeca na geracao, nao no inicio do agente. Padroes:
 `intermediario-01`, `windows-lab-01`, ambos os servicos. O solicitante registrado e o
 usuario Linux. Informe outro `--agent-id` se sua identidade foi alterada.
 
@@ -234,3 +234,37 @@ coerentes. O token antigo perde validade apos atualizar/reiniciar o gateway. Nao
 aprovacao corporativa inexistente no JSON. Para rollback, pare agente/proxy, restaure
 os backups `config.json.before-homologation-*` nos tres ambientes e reinicie o gateway.
 Os backups sao privados e preservam os caminhos do certificado publico.
+
+## Validade de 720 horas
+
+Para renovar um cliente existente com emissao centralizada e comando pronto para
+o agente, prefira `tunnel rotate-client-token --client-id intermediario-01 --hours 720`
+no aws-frp, conforme [AWS-TUNNEL.md](AWS-TUNNEL.md). O roteiro manual abaixo segue valido.
+
+Atualize `homologation.py` no aws-frp e nos ambientes que aplicam politicas antes
+de gerar o perfil de 30 dias. A versao antiga recusa politicas acima de 24 horas.
+O padrao continua 24; `prepare` e `issue-client` aceitam somente inteiros de 1 a 720.
+Mais horas nao alteram destinos, portas, limites de sessao ou aprovacao corporativa.
+
+No aws-frp, para renovar o MESMO cliente e as politicas por 30 dias:
+
+```bash
+git -C ~/secure-gateway pull --ff-only origin main
+sudo install -o root -g root -m 0644 ~/secure-gateway/homologation.py /opt/gateway-poc-https/homologation.py
+RENOVACAO="$HOME/homologacao-$(date -u +%Y%m%dT%H%M%SZ)"
+python3 /opt/gateway-poc-https/homologation.py prepare --out "$RENOVACAO" --client-id intermediario-01 --agent-id windows-lab-01 --services gitlab artifactory --hours 720
+sudo python3 /opt/gateway-poc-https/homologation.py apply --config /etc/gateway-poc-https/config.json --policy "$RENOVACAO/gateway-policy.json"
+sudo systemctl restart gateway-poc-https
+```
+
+Transfira somente agent-policy.json ao Windows restrito e aplique com o helper
+atualizado, conforme [WINDOWS-TUNNEL.md](WINDOWS-TUNNEL.md). O cliente recebe o novo
+token por canal aprovado. Para proxy local, recebe tambem client-policy.json e
+aplica com o helper atualizado. Git/Edge diretos atualizam a senha do proxy;
+Maven direto recarrega SECURE_GATEWAY_TOKEN. O token antigo do mesmo ID deixa de
+funcionar depois de atualizar/reiniciar o gateway. Os outros clientes nao sao renovados.
+
+`issue-client --hours 720` so cadastra um ID novo e limita o prazo ao vencimento
+mais proximo das politicas existentes. Nao estende sozinho a politica do agente.
+Revogacao, expiracao e validade da autorizacao por servico continuam obrigatorias.
+O campo corporate_approval continua pending; 30 dias nao equivalem a homologacao.

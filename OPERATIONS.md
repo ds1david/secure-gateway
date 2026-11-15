@@ -12,6 +12,9 @@ Para atualizar a estrutura antiga, siga primeiro [MIGRATION.md](MIGRATION.md).
 
 ## 1. aws-frp
 
+O wrapper Linux oferece `tunnel up/down/status/logs/check/restart` e
+`rotate-client-token`, conforme [AWS-TUNNEL.md](AWS-TUNNEL.md).
+
 Atualizar codigo (quando houver nova versao):
 
 ```bash
@@ -34,6 +37,9 @@ recebe somente `agent-policy.json`. Para entrada externa HTTPS use
 [EXTERNAL-PROXY.md](EXTERNAL-PROXY.md), inclusive regra de acesso da porta 8443.
 
 ## 2. Windows restrito
+
+O comando por PATH `tunnel up/down/status/logs/check` esta descrito em
+[WINDOWS-TUNNEL.md](WINDOWS-TUNNEL.md). Os comandos abaixo do launcher seguem validos.
 
 No PowerShell, entre no clone local desse computador (ajuste o caminho do usuario):
 
