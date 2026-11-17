@@ -6,7 +6,6 @@ __pycache__/
 *.key
 *.pem
 *.crt
-*.zip
 *.sqlite*
 *.log
 *.before-*
