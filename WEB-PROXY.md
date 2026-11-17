@@ -47,8 +47,10 @@ Campos exatos:
   inclui api.empresa.exemplo, nao falsaempresa.exemplo);
 - ports: 80/443 no modo corporativo, 18765/18766 no laboratorio;
 - private_networks: CIDRs privados estritos explicitamente autorizados, de preferencia
-  IPs /32 ou /128 dos destinos. Vazio exige IP global. Somente RFC1918 e ULA podem
-  ser autorizados. Loopback, link-local, multicast e metadados permanecem negados;
+  IPs /32 ou /128 dos destinos. Vazio exige IP global. RFC1918 e ULA podem
+  ser autorizados. A faixa compartilhada RFC6598 (100.64.0.0/10) aceita somente
+  hosts individuais /32, nunca blocos amplos. 100.100.100.200 permanece bloqueado
+  como endpoint de metadados, mesmo se listado. Loopback, link-local, multicast e metadados permanecem negados;
 - lab_only: true ou false.
 
 Names/ports/IPs nao previstos sao recusados, incluindo apos redirecionamentos.

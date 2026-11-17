@@ -48,6 +48,23 @@ class WebPolicyTests(unittest.TestCase):
         self.assertTrue(w.address_allowed(w.lab_policy(), '127.0.0.1'))
         self.assertFalse(w.address_allowed(w.lab_policy(), '1.1.1.1'))
 
+    def test_shared_address_requires_exact_host_and_keeps_metadata_denied(self):
+        policy = {'hosts': ['artifactory.sicredi.net'], 'suffixes': [], 'ports': [80, 443],
+                  'private_networks': [], 'lab_only': False}
+        self.assertFalse(w.address_allowed(policy, '100.126.162.34'))
+        policy['private_networks'] = ['100.126.162.34/32']
+        w.validate(policy)
+        self.assertTrue(w.address_allowed(policy, '100.126.162.34'))
+        self.assertFalse(w.address_allowed(policy, '100.126.162.35'))
+        for cidr in ('100.64.0.0/10', '100.126.162.0/24', '100.100.100.200/32'):
+            with self.assertRaises(w.WebPolicyError):
+                w.validate({**policy, 'private_networks': [cidr]})
+        self.assertFalse(w.address_allowed({**policy, 'private_networks': ['100.100.100.200/32']}, '100.100.100.200'))
+        answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('100.126.162.34', 80))]
+        with mock.patch.object(w.socket, 'getaddrinfo', return_value=answers), mock.patch.object(w.socket, 'socket') as create:
+            w.connect(policy, 'artifactory.sicredi.net', 80)
+            create.return_value.connect.assert_called_once_with(('100.126.162.34', 80))
+
     def test_dns_pinning_mixed_addresses_denied_and_failure_codes(self):
         policy = {'hosts': ['one.example'], 'suffixes': [], 'ports': [443],
                   'private_networks': [], 'lab_only': False}

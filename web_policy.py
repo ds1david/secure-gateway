@@ -44,7 +44,10 @@ def validate(policy):
             network = ipaddress.ip_network(cidr, strict=True)
         except (TypeError, ValueError):
             raise WebPolicyError('web_network_invalid') from None
-        if not any(network.version == parent.version and network.subnet_of(parent) for parent in private):
+        shared_host = (network.version == 4 and network.prefixlen == 32
+                       and network.subnet_of(ipaddress.ip_network('100.64.0.0/10'))
+                       and network.network_address != ipaddress.ip_address('100.100.100.200'))
+        if not shared_host and not any(network.version == parent.version and network.subnet_of(parent) for parent in private):
             raise WebPolicyError('web_network_invalid')
     return policy
 
@@ -60,6 +63,8 @@ def address_allowed(policy, address):
     ip = ipaddress.ip_address(address)
     if policy['lab_only']:
         return ip.is_loopback
+    if ip == ipaddress.ip_address('100.100.100.200'):
+        return False
     if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
         return False
     if ip.is_global:
