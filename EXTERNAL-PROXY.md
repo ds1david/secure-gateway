@@ -13,7 +13,7 @@ Caso ja tenha o clone novo:
 
 ```bash
 git -C ~/secure-gateway pull --ff-only origin main
-sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,homologation.py} /opt/gateway-poc-https/
+sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,web_policy.py,homologation.py} /opt/gateway-poc-https/
 sudo install -o root -g root -m 0644 ~/secure-gateway/deploy/gateway-poc-https.service /etc/systemd/system/gateway-poc-https.service
 sudo systemctl daemon-reload
 ```

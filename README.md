@@ -52,3 +52,5 @@ POM ficticio com Maven real, cache isolado e TLS validado. Todos os destinos usa
 nos testes sao ficticios e locais.
 
 Jira e Confluence no Edge pelo proxy existente: [operacao e deploy](JIRA-CONFLUENCE.md).
+
+Proxy de navegacao configuravel: [homologacao de laboratorio e operacao](WEB-PROXY.md).

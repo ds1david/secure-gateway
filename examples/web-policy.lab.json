@@ -1,0 +1,7 @@
+{
+  "hosts": ["localhost"],
+  "suffixes": [],
+  "ports": [18765, 18766],
+  "private_networks": [],
+  "lab_only": true
+}

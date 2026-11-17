@@ -1,0 +1,7 @@
+{
+  "hosts": ["gitlab.sicredi.net", "artifactory.sicredi.net", "sicredi.atlassian.net"],
+  "suffixes": ["atlassian.com", "atl-paas.net", "ss-inf.net", "jira.com", "atlassian-dev.net", "atlassian-3p.com"],
+  "ports": [80, 443],
+  "private_networks": [],
+  "lab_only": false
+}

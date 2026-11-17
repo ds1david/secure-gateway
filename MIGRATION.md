@@ -50,7 +50,7 @@ independentes nem sobrescreva um pacote que ja exista na raiz.
 
 ```bash
 git -C ~/secure-gateway pull --ff-only origin main
-sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,homologation.py,requirements-https.txt} /opt/gateway-poc-https/
+sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,web_policy.py,homologation.py,requirements-https.txt} /opt/gateway-poc-https/
 sudo /opt/gateway-poc-https/.venv/bin/python -m pip install -r /opt/gateway-poc-https/requirements-https.txt
 sudo install -o root -g root -m 0644 ~/secure-gateway/deploy/gateway-poc-https.service /etc/systemd/system/gateway-poc-https.service
 sudo systemctl daemon-reload

@@ -39,7 +39,7 @@ aceitavel para a verificacao de origem da inspecao corporativa; prefira cadeia p
 
 ```bash
 sudo install -d -o root -g root -m 0755 /opt/gateway-poc-https
-sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,requirements-https.txt} /opt/gateway-poc-https/
+sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,web_policy.py,requirements-https.txt} /opt/gateway-poc-https/
 sudo python3 -m venv /opt/gateway-poc-https/.venv
 sudo /opt/gateway-poc-https/.venv/bin/python -m pip install -r /opt/gateway-poc-https/requirements-https.txt
 sudo install -d -o root -g gateway-poc -m 0750 /etc/gateway-poc-https

@@ -108,7 +108,7 @@ Revise e mescle a configuração se já houver outros serviços; não sobrescrev
 existentes. Valide com `sudo haproxy -c -f /etc/haproxy/haproxy.cfg` antes de reiniciar.
 Os arquivos systemd e HAProxy foram preparados; não foram executados numa EC2 nesta sessão.
 
-Instale `poc.py`, `stream.py`, `https_poc.py` e `requirements-https.txt` em
+Instale `poc.py`, `stream.py`, `web_policy.py`, `https_poc.py` e `requirements-https.txt` em
 `/opt/gateway-poc-https`, pertencentes a root. Crie a venv nesse diretório e instale as
 dependências nela. Instale o pacote gateway em `/etc/gateway-poc-https` com diretório
 0750 e arquivos 0640, `root:gateway-poc`. Use o usuário sem login `gateway-poc` da POC.

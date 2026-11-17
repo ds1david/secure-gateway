@@ -16,10 +16,11 @@ import socket
 import ssl
 import http.client
 import uuid
+import web_policy
 
 DEFAULT_HOURS = 24
 MAX_HOURS = 720
-SERVICES = {'gitlab': 18443, 'artifactory': 18081, 'atlassian': 18444}
+SERVICES = {'gitlab': 18443, 'artifactory': 18081, 'atlassian': 18444, 'web': 18084}
 LIMITS = {'max_bytes': 16 * 1024 * 1024, 'max_seconds': 300,
           'max_sessions': 4, 'idle_seconds': 30, 'client_requests_per_minute': 120}
 
@@ -49,6 +50,8 @@ def prepare(out, client_id='intermediario-01', agent_id='windows-lab-01', hours=
     common = {'operation_mode': 'homologation', 'agent_id': agent_id,
         'services': {name: {'enabled': True, 'local_port': SERVICES[name],
                            'test_authorization': copy.deepcopy(authorization)} for name in services}, **LIMITS}
+    if 'web' in common['services']:
+        common['services']['web']['web_policy'] = web_policy.lab_policy()
     token = secrets.token_urlsafe(32)
     digest = hashlib.sha256(token.encode()).hexdigest()
     token_path = out / 'client.token'
@@ -86,6 +89,8 @@ def apply(config_path, policy_path, validate_only=False):
         raise ValueError('invalid policy fields or agent identity')
     if not patch.get('services') or set(patch['services']) - SERVICES.keys():
         raise ValueError('invalid destinations')
+    if 'web' in patch['services']:
+        web_policy.validate(patch['services']['web'].get('web_policy'))
     for entry in patch['services'].values():
         authorization = entry.get('test_authorization', {})
         try:
@@ -212,6 +217,8 @@ def rotate_client_token(config_path, out, client_id, hours=DEFAULT_HOURS, reques
             policy['patch'][name] = config.get(name, default)
         for name, entry in policy['patch']['services'].items():
             entry['local_port'] = config['services'][name].get('local_port', SERVICES[name])
+            if name == 'web':
+                entry['web_policy'] = copy.deepcopy(config['services'][name]['web_policy'])
         if role == 'gateway':
             policy['patch']['token_clients'][client_id]['services'] = list(scopes)
         if role == 'client':
@@ -274,6 +281,53 @@ def enable_atlassian(config_path, out, client_id='intermediario-01'):
             'expires_utc': client['expires_utc'], 'backup': backup, 'bundle': str(out),
             'windows_command': 'tunnel rotate-client-token -PolicyJsonBase64 ' + encoded,
             'action': 'restart gateway; apply public agent policy on restricted Windows'}
+
+
+
+def configure_web_proxy(config_path, out, policy_path, client_id='intermediario-01'):
+    """Configure a web allowlist without changing tokens or their expiration."""
+    config_path, out = Path(config_path).resolve(), Path(out).resolve()
+    policy = web_policy.validate(json.loads(Path(policy_path).read_text(encoding='utf-8-sig')))
+    config = json.loads(config_path.read_text(encoding='utf-8-sig'))
+    client = config.get('token_clients', {}).get(client_id)
+    if (config.get('operation_mode') != 'homologation' or config.get('client_auth') != 'token'
+            or not client or client.get('enabled') is not True):
+        raise ValueError('requires an enabled homologation token client')
+    if not client.get('services') or set(client['services']) - SERVICES.keys():
+        raise ValueError('invalid client services')
+    now = datetime.datetime.now(datetime.timezone.utc)
+    end = datetime.datetime.strptime(client['expires_utc'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)
+    if not 0 < (end - now).total_seconds() <= MAX_HOURS * 3600:
+        raise ValueError('client expired or exceeds maximum validity')
+    auth = {'kind': 'requester_authorized_test', 'agent_id': config['agent_id'],
+        'requested_by': os.environ.get('SUDO_USER') or getpass.getuser(),
+        'issued_utc': now.strftime('%Y-%m-%dT%H:%M:%SZ'), 'expires_utc': client['expires_utc'],
+        'corporate_approval': 'pending', 'purpose': 'Operator-requested web proxy POC; not production approval'}
+    services = {name: copy.deepcopy(entry) for name, entry in config.get('services', {}).items()
+                if name in SERVICES and entry.get('enabled') is True}
+    services['web'] = {'enabled': True, 'local_port': SERVICES['web'],
+                       'test_authorization': auth, 'web_policy': policy}
+    limits = {key: config.get(key, value) for key, value in LIMITS.items()}
+    for key, value in {'max_sessions': 16, 'max_bytes': 64 * 1024 * 1024,
+                       'max_seconds': 1800, 'idle_seconds': 90,
+                       'client_requests_per_minute': 600}.items():
+        limits[key] = max(limits[key], value)
+    common = {'operation_mode': 'homologation', 'agent_id': config['agent_id'], 'services': services, **limits}
+    client = copy.deepcopy(client)
+    client['services'] = list(dict.fromkeys([*client['services'], 'web']))
+    gateway = {'format': 1, 'role': 'gateway', 'patch': {**copy.deepcopy(common),
+               'client_auth': 'token', 'token_clients': {client_id: client}}}
+    agent = {'format': 1, 'role': 'agent', 'patch': common}
+    # Validate before touching the current gateway configuration.
+    out.mkdir(parents=True, exist_ok=False, mode=0o700)
+    write_json(out / 'gateway-policy.json', gateway)
+    write_json(out / 'agent-policy.json', agent)
+    backup = apply(config_path, out / 'gateway-policy.json')
+    encoded = base64.b64encode(json.dumps(agent, separators=(',', ':')).encode()).decode()
+    return {'event': 'web_proxy_configured', 'client_id': client_id, 'token_changed': False,
+            'expires_utc': client['expires_utc'], 'backup': backup, 'bundle': str(out),
+            'lab_only': policy['lab_only'],
+            'windows_command': 'tunnel rotate-client-token -PolicyJsonBase64 ' + encoded}
 
 
 def print_rotation(result, show_token=False):
@@ -400,6 +454,11 @@ if __name__ == '__main__':
     browser.add_argument('--config', required=True)
     browser.add_argument('--out', required=True)
     browser.add_argument('--client-id', default='intermediario-01')
+    web = sub.add_parser('configure-web-proxy')
+    web.add_argument('--config', required=True)
+    web.add_argument('--out', required=True)
+    web.add_argument('--policy', default='examples/web-policy.lab.json')
+    web.add_argument('--client-id', default='intermediario-01')
     check = sub.add_parser('check-gateway')
     check.add_argument('--config', required=True)
     check.add_argument('--agent-host', default='agent-gateway.sicredi.space')
@@ -424,6 +483,10 @@ if __name__ == '__main__':
         print_rotation(rotate_client_token(args.config, args.out, args.client_id, args.hours, args.requested_by), args.show_token)
     elif args.command == 'enable-atlassian':
         result = enable_atlassian(args.config, args.out, args.client_id)
+        print(json.dumps(result))
+        print(result['windows_command'])
+    elif args.command == 'configure-web-proxy':
+        result = configure_web_proxy(args.config, args.out, args.policy, args.client_id)
         print(json.dumps(result))
         print(result['windows_command'])
     elif args.command == 'check-gateway':

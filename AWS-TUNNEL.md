@@ -8,7 +8,7 @@ alterados certificados, chaves ou regras de firewall por esse wrapper.
 
 ```bash
 git -C ~/secure-gateway pull --ff-only origin main
-sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,homologation.py} /opt/gateway-poc-https/
+sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,web_policy.py,homologation.py} /opt/gateway-poc-https/
 sudo systemctl restart gateway-poc-https
 mkdir -p ~/.local/bin
 ln -s ~/secure-gateway/tunnel.sh ~/.local/bin/tunnel

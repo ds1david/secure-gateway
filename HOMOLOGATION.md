@@ -62,7 +62,7 @@ Atualize o codigo e instale os quatro modulos, preservando configuracoes e certi
 
 ```bash
 git -C ~/secure-gateway pull --ff-only origin main
-sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,homologation.py} /opt/gateway-poc-https/
+sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,poc.py,stream.py,web_policy.py,homologation.py} /opt/gateway-poc-https/
 python3 /opt/gateway-poc-https/homologation.py prepare --out ~/bundles-homologation --client-id intermediario-01 --agent-id windows-lab-01 --hours 24
 ```
 

@@ -41,7 +41,7 @@ Execute no shell Linux da EC2 (nao no WSL intermediario):
 
 ```bash
 git -C ~/secure-gateway pull --ff-only origin main
-sudo install -o root -g root -m 0644 ~/secure-gateway/https_poc.py ~/secure-gateway/homologation.py ~/secure-gateway/poc.py ~/secure-gateway/stream.py /opt/gateway-poc-https/
+sudo install -o root -g root -m 0644 ~/secure-gateway/web_policy.py ~/secure-gateway/https_poc.py ~/secure-gateway/homologation.py ~/secure-gateway/poc.py ~/secure-gateway/stream.py /opt/gateway-poc-https/
 sudo install -o root -g root -m 0644 ~/secure-gateway/deploy/gateway-poc-https.service /etc/systemd/system/gateway-poc-https.service
 sudo systemctl daemon-reload
 ```
