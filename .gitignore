@@ -16,3 +16,9 @@ homologacao*/
 policy.json
 certs*.zip
 bundles*.zip
+
+# .NET POC outputs and user configuration
+**/bin/
+**/obj/
+yarp-poc/publish*/
+yarp-poc/*.user.json

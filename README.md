@@ -54,3 +54,5 @@ nos testes sao ficticios e locais.
 Jira e Confluence no Edge pelo proxy existente: [operacao e deploy](JIRA-CONFLUENCE.md).
 
 Proxy de navegacao configuravel: [homologacao de laboratorio e operacao](WEB-PROXY.md).
+
+POC YARP isolada: [HTTPS terminado no Windows restrito](YARP-POC.md).

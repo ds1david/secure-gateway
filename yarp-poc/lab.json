@@ -1,0 +1,7 @@
+{
+  "ListenPort": 18766,
+  "Destination": "http://127.0.0.1:18765/",
+  "LabOnly": true,
+  "TrustedRootFile": null,
+  "TrustedRootSha256": null
+}
