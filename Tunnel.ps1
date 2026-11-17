@@ -12,7 +12,7 @@ param(
     [ValidateSet('up','down','status','logs','check','restart','rotate-client-token')]
     [string]$Command = 'status',
     [string]$Config = '',
-    [ValidateSet('lab-status','lab-catalog','lab-echo','gitlab','artifactory','homologation')]
+    [ValidateSet('lab-status','lab-catalog','lab-echo','gitlab','artifactory','atlassian','homologation')]
     [string]$Service = '',
     [string]$RuntimeDirectory = '',
     [ValidateRange(1,10000)][int]$Tail = 100,

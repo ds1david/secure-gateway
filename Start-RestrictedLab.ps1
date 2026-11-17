@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Test','Lab','Check','Agent','Homologation','Status','Stop')][string]$Mode = 'Test',
-    [ValidateSet('lab-status','lab-catalog','lab-echo','gitlab','artifactory','homologation')][string]$Service = 'lab-status',
+    [ValidateSet('lab-status','lab-catalog','lab-echo','gitlab','artifactory','atlassian','homologation')][string]$Service = 'lab-status',
     [string]$Config = '',
     [switch]$Foreground,
     [string]$RuntimeDirectory = ''

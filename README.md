@@ -50,3 +50,5 @@ Os testes de certificados precisam de OpenSSL; no Windows tambem procuram o Open
 do Git. Quando Maven e keytool estao disponiveis, a suite tambem resolve um parent
 POM ficticio com Maven real, cache isolado e TLS validado. Todos os destinos usados
 nos testes sao ficticios e locais.
+
+Jira e Confluence no Edge pelo proxy existente: [operacao e deploy](JIRA-CONFLUENCE.md).

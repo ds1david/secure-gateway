@@ -19,7 +19,7 @@ import uuid
 
 DEFAULT_HOURS = 24
 MAX_HOURS = 720
-SERVICES = {'gitlab': 18443, 'artifactory': 18081}
+SERVICES = {'gitlab': 18443, 'artifactory': 18081, 'atlassian': 18444}
 LIMITS = {'max_bytes': 16 * 1024 * 1024, 'max_seconds': 300,
           'max_sessions': 4, 'idle_seconds': 30, 'client_requests_per_minute': 120}
 
@@ -228,6 +228,54 @@ def rotate_client_token(config_path, out, client_id, hours=DEFAULT_HOURS, reques
             'action': 'restart gateway and apply agent policy; distribute token only to the client'}
 
 
+
+def enable_atlassian(config_path, out, client_id='intermediario-01'):
+    """Extend an existing live test client without changing its token or expiry."""
+    config_path, out = Path(config_path).resolve(), Path(out).resolve()
+    config = json.loads(config_path.read_text(encoding='utf-8-sig'))
+    client = config.get('token_clients', {}).get(client_id)
+    if (config.get('operation_mode') != 'homologation' or config.get('client_auth') != 'token'
+            or not client or client.get('enabled') is not True):
+        raise ValueError('requires an enabled homologation token client')
+    now = datetime.datetime.now(datetime.timezone.utc)
+    end = datetime.datetime.strptime(client['expires_utc'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)
+    if end <= now or (end - now).total_seconds() > MAX_HOURS * 3600:
+        raise ValueError('client is expired or exceeds maximum validity')
+    if not client.get('services') or set(client['services']) - SERVICES.keys():
+        raise ValueError('invalid existing client scopes')
+    # No token issuance, no renewal and no alteration of other client identities.
+    authorization = {'kind': 'requester_authorized_test', 'agent_id': config['agent_id'],
+        'requested_by': os.environ.get('SUDO_USER') or getpass.getuser(),
+        'issued_utc': now.strftime('%Y-%m-%dT%H:%M:%SZ'), 'expires_utc': client['expires_utc'],
+        'corporate_approval': 'pending',
+        'purpose': 'Operator-requested Jira/Confluence browser POC; not production approval'}
+    services = {name: copy.deepcopy(entry) for name, entry in config.get('services', {}).items()
+                if name in SERVICES and entry.get('enabled') is True}
+    services['atlassian'] = {'enabled': True, 'local_port': SERVICES['atlassian'],
+                             'test_authorization': authorization}
+    limits = {key: config.get(key, value) for key, value in LIMITS.items()}
+    for key, value in {'max_sessions': 16, 'max_bytes': 64 * 1024 * 1024,
+                       'max_seconds': 1800, 'idle_seconds': 90,
+                       'client_requests_per_minute': 600}.items():
+        limits[key] = max(limits[key], value)
+    common = {'operation_mode': 'homologation', 'agent_id': config['agent_id'],
+              'services': services, **limits}
+    client = copy.deepcopy(client)
+    client['services'] = list(dict.fromkeys([*client['services'], 'atlassian']))
+    gateway_policy = {'format': 1, 'role': 'gateway', 'patch': {
+        **copy.deepcopy(common), 'client_auth': 'token', 'token_clients': {client_id: client}}}
+    agent_policy = {'format': 1, 'role': 'agent', 'patch': common}
+    out.mkdir(parents=True, exist_ok=False, mode=0o700)
+    write_json(out / 'gateway-policy.json', gateway_policy)
+    write_json(out / 'agent-policy.json', agent_policy)
+    backup = apply(config_path, out / 'gateway-policy.json')
+    encoded = base64.b64encode(json.dumps(agent_policy, separators=(',', ':')).encode()).decode()
+    return {'event': 'atlassian_enabled', 'client_id': client_id, 'token_changed': False,
+            'expires_utc': client['expires_utc'], 'backup': backup, 'bundle': str(out),
+            'windows_command': 'tunnel rotate-client-token -PolicyJsonBase64 ' + encoded,
+            'action': 'restart gateway; apply public agent policy on restricted Windows'}
+
+
 def print_rotation(result, show_token=False):
     if not show_token:
         print(json.dumps(result))
@@ -330,7 +378,7 @@ if __name__ == '__main__':
     create.add_argument('--agent-id', default='windows-lab-01')
     create.add_argument('--hours', type=int, default=DEFAULT_HOURS, help='Validity in hours: 1-720; default 24')
     create.add_argument('--requested-by')
-    create.add_argument('--services', nargs='+', choices=SERVICES, default=list(SERVICES))
+    create.add_argument('--services', nargs='+', choices=SERVICES, default=['gitlab', 'artifactory'])
     update = sub.add_parser('apply')
     update.add_argument('--config', required=True)
     update.add_argument('--policy', required=True)
@@ -340,7 +388,7 @@ if __name__ == '__main__':
     issue.add_argument('--out', required=True)
     issue.add_argument('--client-id', required=True)
     issue.add_argument('--hours', type=int, default=DEFAULT_HOURS, help='Validity in hours: 1-720; default 24')
-    issue.add_argument('--services', nargs='+', choices=SERVICES, default=list(SERVICES))
+    issue.add_argument('--services', nargs='+', choices=SERVICES, default=['gitlab', 'artifactory'])
     rotate = sub.add_parser('rotate-client-token')
     rotate.add_argument('--config', required=True)
     rotate.add_argument('--out', required=True)
@@ -348,6 +396,10 @@ if __name__ == '__main__':
     rotate.add_argument('--hours', type=int, default=DEFAULT_HOURS)
     rotate.add_argument('--requested-by')
     rotate.add_argument('--show-token', action='store_true', help='Explicitly show bearer token in this administrative terminal')
+    browser = sub.add_parser('enable-atlassian')
+    browser.add_argument('--config', required=True)
+    browser.add_argument('--out', required=True)
+    browser.add_argument('--client-id', default='intermediario-01')
     check = sub.add_parser('check-gateway')
     check.add_argument('--config', required=True)
     check.add_argument('--agent-host', default='agent-gateway.sicredi.space')
@@ -370,6 +422,10 @@ if __name__ == '__main__':
         print(json.dumps(issue_client(args.config, args.out, args.client_id, args.hours, args.services)))
     elif args.command == 'rotate-client-token':
         print_rotation(rotate_client_token(args.config, args.out, args.client_id, args.hours, args.requested_by), args.show_token)
+    elif args.command == 'enable-atlassian':
+        result = enable_atlassian(args.config, args.out, args.client_id)
+        print(json.dumps(result))
+        print(result['windows_command'])
     elif args.command == 'check-gateway':
         result = check_gateway(args.config, args.agent_host)
         print(json.dumps(result))

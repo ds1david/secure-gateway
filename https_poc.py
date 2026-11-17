@@ -7,6 +7,7 @@ import datetime
 import hashlib
 import hmac
 import http.client
+import ipaddress
 import http.server
 import json
 import os
@@ -35,9 +36,53 @@ MAX_HTTP = 65536
 TARGETS = {
     'lab-status': ('127.0.0.1', 18765), 'lab-catalog': ('127.0.0.1', 18765),
     'lab-echo': ('127.0.0.1', 18766),
+    'atlassian': ('sicredi.atlassian.net', 443),
     'gitlab': ('gitlab.sicredi.net', 443),
     'artifactory': ('artifactory.sicredi.net', 80),
 }
+
+
+# Tenant is exact; shared vendor infrastructure is matched on DNS label boundaries.
+# Partner CDNs and corporate identity providers remain DIRECT unless separately authorized.
+ATLASSIAN_SHARED_DOMAINS = ('atlassian.com', 'atl-paas.net', 'ss-inf.net',
+                            'jira.com', 'atlassian-dev.net', 'atlassian-3p.com')
+
+
+def atlassian_host(host):
+    if not isinstance(host, str) or len(host) > 253 or host != host.lower():
+        return False
+    if not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+', host):
+        return False
+    return host == 'sicredi.atlassian.net' or any(
+        host == domain or host.endswith('.' + domain) for domain in ATLASSIAN_SHARED_DOMAINS)
+
+
+def enabled_services(config):
+    services = [name for name in TARGETS if not name.startswith('lab-')
+                and config.get('services', {}).get(name, {}).get('enabled') is True]
+    if not services:
+        raise ChannelError('no_enabled_services', 'service_authorization')
+    return services
+
+
+def atlassian_connect(host):
+    if not atlassian_host(host):
+        raise ValueError('destination denied')
+    addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+        raise ValueError('non-public destination denied')
+    # Connect to a validated address directly; never resolve again after validation.
+    last = None
+    for family, kind, proto, _, address in addresses:
+        peer = socket.socket(family, kind, proto)
+        try:
+            peer.settimeout(2)
+            peer.connect(address)
+            return peer
+        except OSError as error:
+            last = error
+            peer.close()
+    raise last
 
 
 class ChannelError(ValueError):
@@ -168,6 +213,20 @@ class State:
 
     def exchange(self, body):
         action, service = body.get('action'), body.get('service')
+        if action == 'poll' and set(body) == {'action', 'services'}:
+            services = body['services']
+            if (not isinstance(services, list) or not 1 <= len(services) <= len(TARGETS)
+                    or any(not isinstance(name, str) or not service_allowed(self.config, name) for name in services)):
+                raise ValueError('invalid poll services')
+            with self.lock:
+                job = next((j for j in self.jobs.values() if j['service'] in services
+                            and not j['assigned'] and not j['done'].is_set()), None)
+                if job is None:
+                    return {'idle': True}
+                job['assigned'] = True
+                poc.audit('https_request_assigned', request_id=job['id'], service=job['service'])
+                return {'job': job['id'], 'service': job['service'],
+                        **({'target_host': job['target_host']} if 'target_host' in job else {})}
         if not service_allowed(self.config, service):
             raise ValueError('service denied')
         with self.lock:
@@ -180,7 +239,7 @@ class State:
                     return {'idle': True}
                 job['assigned'] = True
                 poc.audit('https_request_assigned', request_id=job['id'], service=service)
-                return {'job': job['id']}
+                return {'job': job['id'], **({'target_host': job['target_host']} if 'target_host' in job else {})}
             job = self.jobs.get(body.get('job'))
             if (action != 'exchange' or set(body) != {'action', 'service', 'job', 'seq', 'data', 'closed', 'ready'}
                     or not job or job['done'].is_set() or not job['assigned']
@@ -304,7 +363,7 @@ class APIHandler(TLSAccept, http.server.BaseHTTPRequestHandler):
 class API(BoundedServer, http.server.HTTPServer):
     def __init__(self, address, state, context):
         self.state, self.context = state, context
-        self.slots = threading.BoundedSemaphore(8)
+        self.slots = threading.BoundedSemaphore(32)
         super().__init__(address, APIHandler)
 
     def handle_error(self, *_):
@@ -323,7 +382,7 @@ class PlainClientHandler(socketserver.BaseRequestHandler):
                 if not isinstance(identity, str) or len(identity) > 64:
                     identity = 'unknown'
                 policy = state.config.get('token_clients', {}).get(identity, {})
-                state.rate(identity if policy else 'unknown', min(120, state.config.get('client_requests_per_minute', 30)))
+                state.rate(identity if policy else 'unknown', min(600 if service_allowed(state.config, 'atlassian') else 120, state.config.get('client_requests_per_minute', 30)))
                 if (not isinstance(supplied, str) or not 32 <= len(supplied) <= 128
                         or policy.get('enabled') is not True
                         or utc_expiry(policy.get('expires_utc')) <= time.time()
@@ -340,6 +399,12 @@ class PlainClientHandler(socketserver.BaseRequestHandler):
             else:
                 raise ValueError('unknown client auth mode')
             service = request.get('service')
+            target_host = request.get('target_host')
+            if service == 'atlassian' and request.get('op') == 'open':
+                expected = expected | {'target_host'}
+                if not atlassian_host(target_host):
+                    poc.send(self.request, {'error': 'denied'})
+                    return
             if (set(request) != expected or request['op'] not in ('open', 'check')
                     or service not in policy.get('services', []) or not service_allowed(state.config, service)):
                 poc.send(self.request, {'error': 'denied'})
@@ -352,13 +417,15 @@ class PlainClientHandler(socketserver.BaseRequestHandler):
                    'done': threading.Event(), 'assigned': False, 'ready': False, 'seq': 0,
                    'bytes': 0, 'activity': now, 'deadline': now + state.config['max_seconds'],
                    'error': 'agent_timeout'}
+            if service == 'atlassian':
+                job['target_host'] = target_host
             expiry = utc_expiry(policy.get('expires_utc'))
             test_expiry = utc_expiry(state.config['services'][service].get('test_authorization', {}).get('expires_utc'))
             for limit in (expiry, test_expiry):
                 if limit:
                     job['deadline'] = min(job['deadline'], now + max(0, limit - time.time()))
             with state.lock:
-                if len(state.jobs) >= min(4, state.config.get('max_sessions', 1)):
+                if len(state.jobs) >= min(16 if service_allowed(state.config, 'atlassian') else 4, state.config.get('max_sessions', 1)):
                     poc.send(self.request, {'error': 'busy'})
                     return
                 state.jobs[job['id']] = job
@@ -389,7 +456,7 @@ class Clients(BoundedServer, socketserver.TCPServer):
 
     def __init__(self, address, state, context):
         self.state, self.context = state, context
-        self.slots = threading.BoundedSemaphore(8)
+        self.slots = threading.BoundedSemaphore(32)
         super().__init__(address, ClientHandler)
 
     def handle_error(self, *_):
@@ -438,23 +505,34 @@ class Channel:
 
 
 def agent(config, service, stop):
+    pool = service if isinstance(service, list) else None
+    if pool is not None:
+        if not pool or any(not service_allowed(config, name) for name in pool):
+            raise ChannelError('service_disabled_or_expired', 'service_authorization')
+        service = pool[0]
     if not service_allowed(config, service):
         raise ChannelError('service_disabled_or_expired', 'service_authorization')
     channel = Channel(config)
     delay, connected = 1, False
     while not stop.is_set():
         try:
-            result = channel.request({'action': 'poll', 'service': service})
+            result = channel.request({'action': 'poll', 'services': pool} if pool is not None
+                                     else {'action': 'poll', 'service': service})
             if not connected:
                 poc.audit('https_agent_connected', service=service)
                 connected = True
             if 'job' in result:
+                if pool is not None:
+                    service = result.get('service')
+                    if service not in pool or not service_allowed(config, service):
+                        raise ValueError('invalid job service')
                 local = None
                 seq, finished = 0, False
                 try:
-                    local = socket.create_connection(TARGETS[service], timeout=2)
+                    local = (atlassian_connect(result.get('target_host')) if service == 'atlassian'
+                             else socket.create_connection(TARGETS[service], timeout=2))
                     local.settimeout(.1)
-                except OSError:
+                except (OSError, ValueError):
                     pass
                 try:
                     closed = local is None
@@ -499,7 +577,7 @@ def agent(config, service, stop):
             delay = min(30, delay * 2)
 
 
-def client_socket(config, service, op='open'):
+def client_socket(config, service, op='open', target_host=None):
     if not service_allowed(config, service):
         raise ChannelError('service_disabled_or_expired', 'service_authorization')
     context = ssl.create_default_context()
@@ -514,6 +592,8 @@ def client_socket(config, service, op='open'):
     sock = poc.connect(args, context)
     try:
         request = {'op': op, 'service': service}
+        if service == 'atlassian' and op == 'open':
+            request['target_host'] = target_host or TARGETS[service][0]
         if mode == 'token':
             request.update(client_id=config['client_id'], token=Path(file(config, 'client_token_file')).read_text().strip())
         poc.send(sock, request)
@@ -545,9 +625,10 @@ def agent_pool(config, services, stop):
     for service in services:
         if not service_allowed(config, service):
             raise ChannelError('service_disabled_or_expired', 'service_authorization')
-    # Four bounded workers allow concurrent browser/Git requests without an open proxy.
-    workers = [threading.Thread(target=agent, args=(config, services[i % len(services)], stop), daemon=True)
-               for i in range(4)]
+    # Vendor browsing has bounded additional workers; original profiles keep four.
+    count = 16 if 'atlassian' in services else 4
+    workers = [threading.Thread(target=agent, args=(config, services, stop), daemon=True)
+               for _ in range(count)]
     for worker in workers:
         worker.start()
     while not stop.wait(.5):
@@ -583,7 +664,7 @@ def preflight(config, services):
             if not isinstance(path, str) or not path.startswith('/') or path.startswith('//') or '\r' in path or '\n' in path:
                 raise ChannelError('invalid_readiness_path', 'target_preflight')
             connection = (http.client.HTTPSConnection(host, port, timeout=5, context=target_tls)
-                          if service == 'gitlab' else http.client.HTTPConnection(host, port, timeout=5))
+                          if port == 443 else http.client.HTTPConnection(host, port, timeout=5))
             try:
                 connection.request('HEAD', path, headers={'Connection': 'close'})
                 response = connection.getresponse()
@@ -624,7 +705,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
         return None
 
     def open_remote(self, service):
-        return client_socket(self.server.config, service)
+        return client_socket(self.server.config, service, target_host=getattr(self, 'target_host', None))
 
     def handle(self):
         established = False
@@ -669,10 +750,18 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                     raise ValueError('authority denied')
             elif (url.scheme != 'http' or method not in ('GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS')):
                 raise ValueError('method denied')
+            self.target_host = None
             service = next((name for name, destination in TARGETS.items()
                             if destination == (url.hostname, port)
                             and service_allowed(self.server.config, name)), None)
+            if service is None and method == 'CONNECT' and port == 443 and atlassian_host(url.hostname):
+                service = 'atlassian' if service_allowed(self.server.config, 'atlassian') else None
+            if service == 'atlassian':
+                if method != 'CONNECT' or port != 443:
+                    raise ValueError('destination denied')
+                self.target_host = url.hostname
             if service is None:
+                poc.audit('proxy_destination_denied', host=url.hostname, port=port)
                 raise ValueError('destination denied')
             destination_allowed = True
             with self.open_remote(service) as remote:
@@ -913,7 +1002,10 @@ class ExternalProxyHandler(TLSAccept, ProxyHandler):
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
         try:
-            poc.send(local, {'op': 'open', 'service': service, 'client_id': identity, 'token': token})
+            request = {'op': 'open', 'service': service, 'client_id': identity, 'token': token}
+            if service == 'atlassian':
+                request['target_host'] = self.target_host
+            poc.send(local, request)
             result = poc.receive(local, timeout=12)
             if result != {'ready': True}:
                 raise ChannelError('gateway_session_unavailable', 'proxy_session')
@@ -942,12 +1034,19 @@ class ExternalProxy(BoundedServer, socketserver.TCPServer):
         if host:
             if not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?', host):
                 raise ValueError('invalid public proxy hostname')
+            atlassian_rule = ''
+            if self.config.get('services', {}).get('atlassian', {}).get('enabled') is True:
+                matches = ['host === \"sicredi.atlassian.net\"'] + [
+                    f'(host === {json.dumps(d)} || dnsDomainIs(host, {json.dumps("." + d)}))'
+                    for d in ATLASSIAN_SHARED_DOMAINS]
+                atlassian_rule = ('  if (' + ' || '.join(matches) + ')\n'
+                    + f'    return \"HTTPS {host}:{self.config.get("external_proxy_port", address[1])}\";\n')
             self.pac = ('function FindProxyForURL(url, host) {\n'
                 '  host = host.toLowerCase();\n'
                 '  if (host === "gitlab.sicredi.net" || host === "artifactory.sicredi.net")\n'
                 f'    return "HTTPS {host}:{self.config.get("external_proxy_port", address[1])}";\n'
-                '  return "DIRECT";\n}\n')
-        self.slots = threading.BoundedSemaphore(4)
+                + atlassian_rule + '  return "DIRECT";\n}\n')
+        self.slots = threading.BoundedSemaphore(16)
         super().__init__(address, ExternalProxyHandler)
 
     def handle_error(self, *_):
@@ -959,7 +1058,7 @@ class LocalProxy(BoundedServer, socketserver.TCPServer):
 
     def __init__(self, config):
         self.config = config
-        self.slots = threading.BoundedSemaphore(4)
+        self.slots = threading.BoundedSemaphore(16)
         super().__init__(('127.0.0.1', config.get('proxy_port', 18080)), ProxyHandler)
 
     def handle_error(self, *_):
@@ -1023,9 +1122,9 @@ def main():
             if args.lab:
                 raise ValueError('homologation does not start synthetic fixtures')
             if args.preflight:
-                poc.audit('agent_preflight_ok', **preflight(config, ['gitlab', 'artifactory']))
+                poc.audit('agent_preflight_ok', **preflight(config, enabled_services(config)))
             mark_ready(args.ready_file)
-            agent_pool(config, ['gitlab', 'artifactory'], stop)
+            agent_pool(config, enabled_services(config), stop)
             return
         if args.lab and not args.service.startswith('lab-'):
             raise ValueError('automatic lab only supports synthetic services')
@@ -1046,11 +1145,11 @@ def main():
                     server.shutdown()
                 poc.audit('https_agent_stopped', service=args.service)
     elif args.mode == 'preflight':
-        print(json.dumps(preflight(config, ['gitlab', 'artifactory'] if args.service == 'homologation' else [args.service])))
+        print(json.dumps(preflight(config, enabled_services(config) if args.service == 'homologation' else [args.service])))
     elif args.mode == 'check':
         if args.service == 'homologation':
             results = {}
-            for service in ('gitlab', 'artifactory'):
+            for service in enabled_services(config):
                 if 'agent_url' in config:
                     if not service_allowed(config, service):
                         raise ChannelError('service_disabled_or_expired', 'service_authorization')
