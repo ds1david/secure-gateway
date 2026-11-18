@@ -704,6 +704,84 @@ class HTTPSIntegration(unittest.TestCase):
         except (ValueError, IndexError):
             return None
 
+    @unittest.skipUnless(shutil.which('git'), 'Git unavailable')
+    def test_git_smart_http_push_through_nested_tls_proxy(self):
+        from pathlib import Path
+        root = self.root / ('git-' + uuid.uuid4().hex)
+        root.mkdir()
+        bare, work = root / 'fixture.git', root / 'work'
+        env = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_TERMINAL_PROMPT='0', NO_PROXY='', no_proxy='')
+        def git(*args, cwd=root):
+            result = subprocess.run(['git', *args], cwd=cwd, env=env,
+                capture_output=True, timeout=90)
+            self.assertEqual(0, result.returncode, result.stderr.decode(errors='replace'))
+            return result.stdout.strip()
+        git('init', '--bare', str(bare))
+        git('-C', str(bare), 'config', 'http.receivepack', 'true')
+        git('init', str(work))
+        (work / 'fixture.bin').write_bytes(os.urandom(80000))
+        git('add', '.', cwd=work)
+        git('-c', 'user.name=Lab', '-c', 'user.email=lab@example.invalid',
+            'commit', '-m', 'synthetic upload', cwd=work)
+        expected = git('rev-parse', 'HEAD', cwd=work)
+        backend = str(Path(git('--exec-path').decode()) / ('git-http-backend.exe' if os.name == 'nt' else 'git-http-backend'))
+        class Origin(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_GET(self): self.dispatch()
+            def do_POST(self): self.dispatch()
+            def dispatch(self):
+                path, _, query = self.path.partition('?')
+                body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                child_env = dict(env, GIT_PROJECT_ROOT=str(root), GIT_HTTP_EXPORT_ALL='1',
+                    PATH_INFO=path, QUERY_STRING=query, REQUEST_METHOD=self.command,
+                    CONTENT_TYPE=self.headers.get('Content-Type', ''), CONTENT_LENGTH=str(len(body)),
+                    REMOTE_ADDR='127.0.0.1', SERVER_PROTOCOL='HTTP/1.1')
+                result = subprocess.run([backend], input=body, env=child_env, capture_output=True, timeout=30)
+                head, payload = result.stdout.split(b'\r\n\r\n', 1)
+                headers = [line.decode().split(':', 1) for line in head.split(b'\r\n')]
+                self.send_response(200)
+                for name, value in headers:
+                    if name.lower() != 'status': self.send_header(name, value.strip())
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+        with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Origin) as origin:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(h.file(self.gateway, 'tls_cert'), h.file(self.gateway, 'tls_key'))
+            origin.socket = context.wrap_socket(origin.socket, server_side=True)
+            thread = threading.Thread(target=origin.serve_forever, daemon=True)
+            thread.start()
+            name = 'lab-git'
+            try:
+                with self.token_client() as (config, policy, token), \
+                     mock.patch.dict(self.gateway, {'max_sessions': 4, 'idle_seconds': 30}), \
+                     mock.patch.dict(h.TARGETS, {name: ('localhost', origin.server_address[1])}), \
+                     mock.patch.dict(self.gateway['services'], {name: {'enabled': True}}), \
+                     mock.patch.dict(self.agent['services'], {name: {'enabled': True}}):
+                    policy['services'].append(name)
+                    stop = threading.Event()
+                    agent = threading.Thread(target=h.agent_pool, args=(self.agent, [name], stop), daemon=True)
+                    agent.start()
+                    try:
+                        with self.external_proxy() as proxy:
+                            ca = h.file(config, 'tls_ca')
+                            proxy_url = 'https://' + config['client_id'] + ':' + token + '@localhost:' + str(proxy.server_address[1])
+                            args = ['-c', 'http.proxy=' + proxy_url, '-c', 'http.proxyAuthMethod=basic',
+                                    '-c', 'http.sslCAInfo=' + ca, '-c', 'http.proxySSLCAInfo=' + ca]
+                            if os.name == 'nt': args += ['-c', 'http.sslBackend=openssl']
+                            url = 'https://localhost:' + str(origin.server_address[1]) + '/fixture.git'
+                            git(*args, 'push', url, 'HEAD:refs/heads/lab-push', cwd=work)
+                            self.assertEqual(expected, git('-C', str(bare), 'rev-parse', 'refs/heads/lab-push'))
+                    finally:
+                        stop.set()
+                        agent.join(15)
+            finally:
+                origin.shutdown()
+                thread.join(10)
+                for entry in root.rglob('*'):
+                    if entry.is_file(): entry.chmod(0o600)
+
     def test_external_proxy_requires_tls_and_trusted_hostname(self):
         with self.token_client(), self.external_proxy() as proxy:
             context = ssl.create_default_context(cafile=h.file(self.client, 'tls_ca'))

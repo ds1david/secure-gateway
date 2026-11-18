@@ -857,7 +857,8 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                     remote.sendall(request.encode('iso-8859-1'))
                 established = True
                 reason, count = relay(self.request, remote, self.server.config['max_bytes'],
-                                      self.server.config['max_seconds'], self.server.config.get('idle_seconds', 10))
+                                      self.server.config['max_seconds'], self.server.config.get('idle_seconds', 10),
+                                      on_error=lambda fields: poc.audit('proxy_transport_error', service=service, **fields))
                 poc.audit('external_proxy_finished' if self.credentials else 'local_proxy_finished',
                           service=service, outcome=reason, bytes=count)
         except (OSError, ValueError, TypeError) as error:

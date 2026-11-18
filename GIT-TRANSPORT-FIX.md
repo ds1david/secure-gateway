@@ -13,7 +13,7 @@ nao e perdida. A reproducao usa apenas sockets ficticios, sem servicos corporati
 
 ```bash
 git -C ~/secure-gateway pull --ff-only
-sudo install -o root -g root -m 0644 ~/secure-gateway/https_poc.py /opt/gateway-poc-https/https_poc.py
+sudo install -o root -g root -m 0644 ~/secure-gateway/{https_poc.py,stream.py} /opt/gateway-poc-https/
 sudo systemctl restart gateway-poc-https
 sudo systemctl status gateway-poc-https --no-pager
 sudo journalctl -u gateway-poc-https -f -o short-iso
@@ -75,3 +75,32 @@ exchange_sequence_invalid, exchange_invalid e agent_rate_limited. Esses codigos
 nao registram o conteudo da mensagem nem segredos. Fora da margem temporal, o
 agente continua registrando application_message_not_yet_valid; nesse caso,
 investigue a sincronizacao dos relogios em vez de aumentar a tolerancia.
+
+## Upload Git: propriedade exclusiva dos sockets
+
+O relay anterior usava duas threads que podiam fazer recv e sendall no mesmo
+SSLSocket ao mesmo tempo. EOF em uma thread tambem sinalizava parada global,
+antes de garantir o termino da resposta no sentido oposto. O relay agora usa
+um unico fluxo com select e verificacao de pending TLS; mantem limites de tempo,
+bytes e inatividade, e suporta half-close TCP para receber a resposta final.
+A escrita tem prazo proprio limitado, separado da consulta curta de leitura.
+
+A atualizacao AWS precisa copiar AMBOS https_poc.py e stream.py (comando acima).
+Se a correcao temporal anterior ja esta nos dois ambientes, apenas a AWS precisa
+de restart para o proxy externo; o cliente WSL nao executa relay local neste modo.
+Nao e necessario trocar token, CA ou certificado. Atualize tambem qualquer cliente
+que execute o proxy Python local, se esse modo estiver em uso.
+
+tests/test_stream_relay.py cobre acesso exclusivo, resposta depois de half-close
+e diagnosticos sem dados sensiveis. O teste de exclusividade falha com a versao
+anterior e passa com a correcao. O teste Git smart HTTP em tests/test_https.py
+cria um repositorio bare descartavel e envia 80 KB aleatorios atraves do agente,
+proxy TLS e origem TLS, verificando o hash publicado. Ele tambem passou antes da
+correcao com capacidade suficiente: nao reproduziu exatamente a falha corporativa.
+O teste usa somente endpoints locais e credenciais ficticias.
+
+Em caso de nova falha, proxy_transport_error registra stage (relay_read,
+relay_write ou relay_wait), direction, errno e tls_reason quando disponiveis.
+Nao registra texto da excecao, payload, senha ou token. Correlacione os horarios
+com external_proxy_finished e https_session_finished. A causa especifica no
+ambiente corporativo ainda depende da homologacao depois do deploy.
