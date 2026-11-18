@@ -259,6 +259,10 @@ class State:
                 poc.audit('https_request_assigned', request_id=job['id'], service=service)
                 return {'job': job['id'], **({key: job[key] for key in ('target_host', 'target_port') if key in job})}
             job = self.jobs.get(body.get('job'))
+        if job is None:
+            raise ValueError('invalid exchange')
+        # Network waits must not hold the registry lock across unrelated sessions.
+        with job.setdefault('exchange_lock', threading.Lock()):
             if (action != 'exchange' or set(body) != {'action', 'service', 'job', 'seq', 'data', 'closed', 'ready'}
                     or not job or job['done'].is_set() or not job['assigned']
                     or job['id'] != body['job'] or job['service'] != service
