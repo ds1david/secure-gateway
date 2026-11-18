@@ -182,15 +182,22 @@ class Signer:
                           self.key, algorithm='RS256')
 
 
+# Small clock skew allowance applies only to future iat/nbf, never to expiry.
+MESSAGE_CLOCK_SKEW_SECONDS = 5
+
+
 def decode(token, public_key, issuer, audience):
     result = jwt.decode(token, Path(public_key).read_bytes(), algorithms=['RS256'],
                         audience=audience, issuer=issuer,
-                        options={'require': ['iss', 'aud', 'iat', 'nbf', 'exp', 'jti', 'scope', 'reply_to', 'body']})
+                        options={'verify_iat': False, 'verify_nbf': False,
+                                 'require': ['iss', 'aud', 'iat', 'nbf', 'exp', 'jti', 'scope', 'reply_to', 'body']})
     if (result['scope'] != 'POST:/v1/exchange' or not isinstance(result['body'], dict)
-            or type(result['iat']) is not int or type(result['exp']) is not int
+            or any(type(result[key]) is not int for key in ('iat', 'nbf', 'exp'))
             or not 0 < result['exp'] - result['iat'] <= 30
             or not isinstance(result['jti'], str) or len(result['jti']) != 32):
         raise ChannelError('application_claims_invalid', 'application_authentication')
+    if max(result['iat'], result['nbf']) > time.time() + MESSAGE_CLOCK_SKEW_SECONDS:
+        raise jwt.ImmatureSignatureError('message timestamp exceeds clock skew allowance')
     return result
 
 
@@ -260,15 +267,19 @@ class State:
                 return {'job': job['id'], **({key: job[key] for key in ('target_host', 'target_port') if key in job})}
             job = self.jobs.get(body.get('job'))
         if job is None:
-            raise ValueError('invalid exchange')
+            raise ChannelError('session_not_found', 'service_dispatch')
         # Network waits must not hold the registry lock across unrelated sessions.
         with job.setdefault('exchange_lock', threading.Lock()):
             if (action != 'exchange' or set(body) != {'action', 'service', 'job', 'seq', 'data', 'closed', 'ready'}
-                    or not job or job['done'].is_set() or not job['assigned']
+                    or not job or not job['assigned']
                     or job['id'] != body['job'] or job['service'] != service
-                    or type(body['seq']) is not int or job['seq'] != body['seq']
+                    or type(body['seq']) is not int
                     or type(body['closed']) is not bool or type(body['ready']) is not bool):
-                raise ValueError('invalid exchange')
+                raise ChannelError('exchange_invalid', 'service_dispatch')
+            if job['done'].is_set():
+                raise ChannelError('session_closed', 'service_dispatch')
+            if job['seq'] != body['seq']:
+                raise ChannelError('exchange_sequence_invalid', 'service_dispatch')
             data = base64.b64decode(body['data'], validate=True)
             if len(data) > BLOCK:
                 raise ValueError('block limit')
@@ -363,7 +374,10 @@ class APIHandler(TLSAccept, http.server.BaseHTTPRequestHandler):
                              state.config['agent_id'], state.config['gateway_id'])
             if message['reply_to'] != '':
                 raise ValueError('request binding')
-            state.rate(state.config['agent_id'], 1200)
+            try:
+                state.rate(state.config['agent_id'], 1200)
+            except ValueError:
+                raise ChannelError('agent_rate_limited', 'agent_rate_limit') from None
             state.replay.claim(message)
             stage = 'service_dispatch'
             response = state.exchange(message['body'])
